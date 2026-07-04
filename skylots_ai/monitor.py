@@ -7,18 +7,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
-import select
 import shutil
 import subprocess
-import sys
-import termios
-import time
-import tty
 from typing import Any, Protocol
 
 from skylots_ai.config import Config
 from skylots_ai.console import ConsoleNotifier
 from skylots_ai.database import Database
+from skylots_ai.keyboard import KeyEvent, KeyboardReader
 from skylots_ai.logger import LOG_NAME, setup
 from skylots_ai.models import Lot
 from skylots_ai.parser import Parser
@@ -133,6 +129,9 @@ class Notifier(Protocol):
     ) -> tuple[str, str] | None:
         ...
 
+    def set_keyboard_debug(self, enabled: bool, last_key: str) -> None:
+        ...
+
 
 @dataclass
 class ProfileScanSummary:
@@ -163,6 +162,7 @@ class Monitor:
         self.database.initialize()
         self.monitor_mode = self.config.monitor_mode
         self.active_profile_id = self.config.active_profile_id
+        self.keyboard_debug = False
         self._ensure_active_profile()
 
     def run(self) -> None:
@@ -272,30 +272,55 @@ class Monitor:
     def _wait(self) -> bool:
         seconds = self._current_wait_seconds()
         self.logger.info("Waiting %s seconds", seconds)
-        terminal_settings = self._enable_hotkeys()
 
-        try:
+        with KeyboardReader() as keyboard:
             for remaining in range(seconds, 0, -1):
                 self.notifier.set_countdown(remaining)
-                key = self._read_hotkey(1.0)
-                if not key:
-                    continue
-
-                self._restore_terminal(terminal_settings)
-                terminal_settings = None
-                action = self._handle_hotkey(key)
-                if action == "stop":
-                    return False
-                if action == "scan":
-                    self.notifier.set_countdown(0)
-                    return True
-
-                terminal_settings = self._enable_hotkeys()
-        finally:
-            self._restore_terminal(terminal_settings)
+                event = keyboard.read(1.0)
+                while event is not None:
+                    action = self._handle_keyboard_action(keyboard, event)
+                    if action == "stop":
+                        return False
+                    if action == "scan":
+                        self.notifier.set_countdown(0)
+                        return True
+                    event = keyboard.read(0.0)
 
         self.notifier.set_countdown(0)
         return True
+
+    def _handle_keyboard_action(
+        self,
+        keyboard: KeyboardReader,
+        event: KeyEvent,
+    ) -> str:
+        if self._requires_normal_terminal(event):
+            keyboard.close()
+            action = self._handle_key_event(event)
+            keyboard.__enter__()
+            return action
+
+        return self._handle_key_event(event)
+
+    def _handle_key_event(self, event: KeyEvent) -> str:
+        if self.keyboard_debug:
+            self.notifier.set_keyboard_debug(True, event.name)
+
+        if event.name == "F12":
+            self.keyboard_debug = not self.keyboard_debug
+            self.notifier.set_keyboard_debug(self.keyboard_debug, event.name)
+            return "wait"
+
+        return self._handle_hotkey(event.name)
+
+    def _requires_normal_terminal(self, event: KeyEvent) -> bool:
+        if event.name in {"A", "I", "L"}:
+            return True
+        if event.name == "D" and self.notifier.current_panel() == "profiles":
+            return True
+        if event.name == "ENTER" and self.notifier.current_panel() == "profiles":
+            return True
+        return False
 
     def _handle_hotkey(self, key: str) -> str:
         normalized = key.lower()
@@ -308,6 +333,12 @@ class Monitor:
             return "wait"
         if normalized == "down":
             self.notifier.select_active_row(1)
+            return "wait"
+        if normalized == "left":
+            self.notifier.select_next_panel()
+            return "wait"
+        if normalized == "right":
+            self.notifier.select_next_panel()
             return "wait"
         if normalized == "enter":
             if self.notifier.current_panel() == "profiles":
@@ -720,48 +751,6 @@ class Monitor:
         if "skylots.org" not in url:
             return "Ошибка: нужен URL skylots.org"
         return None
-
-    @staticmethod
-    def _enable_hotkeys() -> list[int | bytes] | None:
-        if not sys.stdin.isatty():
-            return None
-
-        settings = termios.tcgetattr(sys.stdin)
-        tty.setcbreak(sys.stdin)
-        return settings
-
-    @staticmethod
-    def _restore_terminal(settings: list[int | bytes] | None) -> None:
-        if settings is not None and sys.stdin.isatty():
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
-
-    @staticmethod
-    def _read_hotkey(timeout: float) -> str:
-        if not sys.stdin.isatty():
-            time.sleep(timeout)
-            return ""
-
-        readable, _, _ = select.select([sys.stdin], [], [], timeout)
-        if not readable:
-            return ""
-
-        key = sys.stdin.read(1)
-        if key == "\t":
-            return "tab"
-        if key in {"\n", "\r"}:
-            return "enter"
-        if key != "\x1b":
-            return key
-
-        sequence = ""
-        while select.select([sys.stdin], [], [], 0.05)[0]:
-            sequence += sys.stdin.read(1)
-
-        if sequence == "[A":
-            return "up"
-        if sequence == "[B":
-            return "down"
-        return ""
 
     def _get_logger(self) -> logging.Logger:
         logger = logging.getLogger(LOG_NAME)

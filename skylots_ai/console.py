@@ -91,6 +91,8 @@ class ConsoleNotifier:
         self.new_today = 0
         self.total_today = 0
         self.today = date.today()
+        self.keyboard_debug = False
+        self.last_key = "-"
         self.system_statuses: dict[str, bool] = {
             "Internet": True,
             "Cookies": True,
@@ -264,6 +266,11 @@ class ConsoleNotifier:
 
     def current_panel(self) -> str:
         return self.active_panel
+
+    def set_keyboard_debug(self, enabled: bool, last_key: str) -> None:
+        self.keyboard_debug = enabled
+        self.last_key = last_key
+        self.refresh()
 
     def resume(self) -> None:
         if self.live_enabled and self.live is None:
@@ -750,11 +757,12 @@ class ConsoleNotifier:
         self.refresh()
 
     def _context_menu(self) -> str:
+        debug = self._keyboard_debug_text()
         if not self._has_active_item():
             return (
                 f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
                 "TAB панель | A добавить профиль | S сканировать | "
-                "R обновить | Q выход"
+                f"R обновить | Q выход{debug}"
             )
 
         if self.active_panel == "lots":
@@ -762,22 +770,27 @@ class ConsoleNotifier:
                 f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
                 "ENTER открыть лот | ↑↓ выбрать | TAB панель | "
                 "B продавца в чёрный список | F в избранное | "
-                "C копировать ссылку | Q выход"
+                f"C копировать ссылку | Q выход{debug}"
             )
         if self.active_panel == "profiles":
             return (
                 f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
                 "ENTER изменить | A добавить | E вкл/выкл | I интервал | "
                 "D удалить | M режим все/один | N/P профиль | "
-                "TAB панель | Q выход"
+                f"TAB панель | Q выход{debug}"
             )
         if self.active_panel == "events":
             return (
                 f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
-                "C очистить события | TAB панель | Q выход"
+                f"C очистить события | TAB панель | Q выход{debug}"
             )
 
-        return f"[bold]{self.status}[/] | TAB панель | Q выход"
+        return f"[bold]{self.status}[/] | TAB панель | Q выход{debug}"
+
+    def _keyboard_debug_text(self) -> str:
+        if not self.keyboard_debug:
+            return ""
+        return f" | [yellow]Клавиша: {self.last_key}[/]"
 
     def _has_active_item(self) -> bool:
         if self.active_panel == "lots":
