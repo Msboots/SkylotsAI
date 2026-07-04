@@ -25,8 +25,8 @@ class Parser:
         session: requests.Session | None = None,
     ) -> None:
         self.config = config or Config()
-        self.session = session or self._create_session()
         self.logger = self._get_logger()
+        self.session = session or self._create_session()
         self._html: str = ""
 
     def fetch(self, url: str) -> str:
@@ -62,7 +62,16 @@ class Parser:
         if not match:
             return 0
 
-        normalized = match.group().replace(" ", "").replace(",", ".")
+        normalized = match.group().replace(" ", "")
+        if "," in normalized and "." in normalized:
+            comma_index = normalized.rfind(",")
+            dot_index = normalized.rfind(".")
+            decimal_separator = "," if comma_index > dot_index else "."
+            thousand_separator = "." if decimal_separator == "," else ","
+            normalized = normalized.replace(thousand_separator, "")
+            normalized = normalized.replace(decimal_separator, ".")
+        else:
+            normalized = normalized.replace(",", ".")
 
         try:
             return int(float(normalized))

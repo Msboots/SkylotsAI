@@ -11,8 +11,26 @@ from skylots_ai.models import Lot
 class Database:
 
     DB_PATH = Path("data/skylots.db")
+    SCHEMA_VERSION = 1
+    LOT_COLUMNS = {
+        "id": "TEXT PRIMARY KEY",
+        "title": "TEXT",
+        "seller": "TEXT",
+        "price": "INTEGER",
+        "url": "TEXT",
+        "city": "TEXT",
+        "rating": "REAL",
+        "end_time": "TEXT",
+        "first_seen": "TEXT",
+        "last_seen": "TEXT",
+    }
 
     SCHEMA = (
+        """
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER NOT NULL
+        )
+        """,
         """
         CREATE TABLE IF NOT EXISTS lots (
             id TEXT PRIMARY KEY,
@@ -67,13 +85,101 @@ class Database:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         conn = self.connect()
+        try:
+            self._initialize(conn)
+        except sqlite3.DatabaseError:
+            conn.rollback()
+            if self._confirm_rebuild():
+                self._rebuild(conn)
+            else:
+                raise
+        finally:
+            conn.close()
+
+    def get_schema_version(self) -> int:
+        conn = self.connect()
         cur = conn.cursor()
+
+        if not self._table_exists(cur, "schema_version"):
+            conn.close()
+            return 0
+
+        cur.execute("SELECT version FROM schema_version LIMIT 1")
+        row = cur.fetchone()
+        conn.close()
+        return int(row["version"]) if row else 0
+
+    def _initialize(self, conn: sqlite3.Connection) -> None:
+        cur = conn.cursor()
+        for statement in self.SCHEMA:
+            cur.execute(statement)
+
+        self._migrate_lots_table(cur)
+        self._set_schema_version(cur, self.SCHEMA_VERSION)
+        conn.commit()
+
+    def _migrate_lots_table(self, cur: sqlite3.Cursor) -> None:
+        if not self._table_exists(cur, "lots"):
+            return
+
+        existing_columns = self._get_columns(cur, "lots")
+
+        for column, definition in self.LOT_COLUMNS.items():
+            if column in existing_columns:
+                continue
+
+            if "PRIMARY KEY" in definition.upper():
+                raise sqlite3.DatabaseError(
+                    f"Cannot migrate missing primary key column: {column}",
+                )
+
+            cur.execute(
+                f"ALTER TABLE lots ADD COLUMN {column} {definition}",
+            )
+
+    def _set_schema_version(self, cur: sqlite3.Cursor, version: int) -> None:
+        cur.execute("DELETE FROM schema_version")
+        cur.execute(
+            "INSERT INTO schema_version (version) VALUES (?)",
+            (version,),
+        )
+
+    def _rebuild(self, conn: sqlite3.Connection) -> None:
+        cur = conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS lots")
+        cur.execute("DROP TABLE IF EXISTS history")
+        cur.execute("DROP TABLE IF EXISTS notifications")
+        cur.execute("DROP TABLE IF EXISTS sellers")
+        cur.execute("DROP TABLE IF EXISTS schema_version")
 
         for statement in self.SCHEMA:
             cur.execute(statement)
 
+        self._set_schema_version(cur, self.SCHEMA_VERSION)
         conn.commit()
-        conn.close()
+
+    @staticmethod
+    def _confirm_rebuild() -> bool:
+        print("Database schema outdated.")
+        answer = input("Rebuild database? [y/N] ").strip().lower()
+        return answer == "y"
+
+    @staticmethod
+    def _table_exists(cur: sqlite3.Cursor, table: str) -> bool:
+        cur.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name = ?
+            """,
+            (table,),
+        )
+        return cur.fetchone() is not None
+
+    @staticmethod
+    def _get_columns(cur: sqlite3.Cursor, table: str) -> set[str]:
+        cur.execute(f"PRAGMA table_info({table})")
+        return {row["name"] for row in cur.fetchall()}
 
     def get_lot(self, lot_id: str) -> Lot | None:
         conn = self.connect()
