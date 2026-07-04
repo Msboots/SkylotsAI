@@ -20,6 +20,23 @@ from skylots_ai.profiles import ProfileManager, SearchProfile
 
 class Notifier(Protocol):
 
+    def start(
+        self,
+        profiles: list[str],
+        database_lots_count: int,
+        status: str = "RUNNING",
+    ) -> None:
+        ...
+
+    def set_status(self, status: str) -> None:
+        ...
+
+    def set_countdown(self, seconds: int) -> None:
+        ...
+
+    def update_database_lots_count(self, count: int) -> None:
+        ...
+
     def print_status(
         self,
         title: str,
@@ -68,18 +85,23 @@ class Monitor:
         self.database.initialize()
 
     def run(self) -> None:
-        profiles_count = len(self.profile_manager.get_enabled())
+        profiles = self.profile_manager.get_enabled()
         self.logger.info("Skylots AI Assistant started")
-        self.logger.info("Enabled profiles: %s", profiles_count)
-        self.notifier.print_status(
-            "Skylots AI Assistant",
-            [f"Profiles: {profiles_count}"],
+        self.logger.info("Enabled profiles: %s", len(profiles))
+        self.notifier.start(
+            profiles=[profile.name for profile in profiles],
+            database_lots_count=self.database.count_lots(),
         )
 
         try:
             while True:
-                self.single_run()
-                self._wait()
+                try:
+                    self.single_run()
+                    self._wait()
+                except Exception as exc:
+                    self.logger.exception("Monitoring loop error: %s", exc)
+                    self.notifier.set_status("Error. Check logs.")
+                    self._wait()
         except KeyboardInterrupt:
             self.logger.info("Skylots AI Assistant stopped by user")
             self.notifier.print_status("Stopping...", ["Good bye."])
@@ -94,6 +116,7 @@ class Monitor:
 
     def _scan_profile(self, profile: SearchProfile) -> ProfileScanSummary:
         self.logger.info("Scanning profile: %s", profile.name)
+        self.notifier.set_status(f"Scanning profile: {profile.name}...")
 
         html = self.parser.fetch(profile.url)
         lots = self.parser.parse(html)
@@ -109,6 +132,9 @@ class Monitor:
 
             if existing_lot is None:
                 self.database.insert_lot(lot, seen_at)
+                self.notifier.update_database_lots_count(
+                    self.database.count_lots(),
+                )
                 summary.new_lots += 1
                 summary.new_lot_items.append(lot)
                 self.logger.info("New lot: %s | %s", lot.title, lot.url)
@@ -139,8 +165,12 @@ class Monitor:
     def _wait(self) -> None:
         seconds = self.config.check_interval
         self.logger.info("Waiting %s seconds", seconds)
-        self.notifier.print_status("Waiting", [f"{seconds} sec"])
-        time.sleep(seconds)
+
+        for remaining in range(seconds, 0, -1):
+            self.notifier.set_countdown(remaining)
+            time.sleep(1)
+
+        self.notifier.set_countdown(0)
 
     def _get_logger(self) -> logging.Logger:
         logger = logging.getLogger(LOG_NAME)

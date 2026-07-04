@@ -132,6 +132,14 @@ class Database:
         conn.commit()
         conn.close()
 
+    def count_lots(self) -> int:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM lots")
+        count = cur.fetchone()[0]
+        conn.close()
+        return int(count)
+
     @staticmethod
     def _row_to_lot(row: sqlite3.Row) -> Lot:
         return Lot(
