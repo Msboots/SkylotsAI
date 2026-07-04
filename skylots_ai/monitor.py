@@ -41,6 +41,9 @@ class Notifier(Protocol):
     def update_database_lots_count(self, count: int) -> None:
         ...
 
+    def set_system_status(self, name: str, ok: bool) -> None:
+        ...
+
     def print_status(
         self,
         title: str,
@@ -98,6 +101,12 @@ class Monitor:
             status="РАБОТАЕТ",
             profile_urls={profile.name: profile.url for profile in profiles},
         )
+        self.notifier.set_system_status("SQLite", True)
+        self.notifier.set_system_status("Profiles", bool(profiles))
+        self.notifier.set_system_status(
+            "Cookies",
+            bool(self.parser.session.cookies),
+        )
 
         try:
             while True:
@@ -133,6 +142,8 @@ class Monitor:
 
         html = self.parser.fetch(profile.url)
         lots = self.parser.parse(html)
+        self.notifier.set_system_status("Internet", bool(html))
+        self.notifier.set_system_status("Parser", bool(lots) or not html)
         summary = ProfileScanSummary(
             profile_id=profile.id,
             profile_name=profile.name,

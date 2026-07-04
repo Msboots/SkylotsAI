@@ -29,6 +29,7 @@ class ConsoleProfileState:
 
 @dataclass
 class ConsoleLotState:
+    lot_id: str
     time: str
     title: str
     price: int
@@ -44,7 +45,7 @@ class ConsoleNotifier:
     """
 
     MAX_LOTS = 10
-    MAX_EVENTS = 8
+    MAX_EVENTS = 5
 
     def __init__(self, live_enabled: bool = True) -> None:
         self.console = Console()
@@ -63,6 +64,13 @@ class ConsoleNotifier:
         self.new_today = 0
         self.total_today = 0
         self.today = date.today()
+        self.system_statuses: dict[str, bool] = {
+            "Internet": True,
+            "Cookies": True,
+            "Parser": True,
+            "SQLite": True,
+            "Profiles": True,
+        }
 
     def start(
         self,
@@ -119,6 +127,10 @@ class ConsoleNotifier:
         self.database_lots_count = count
         self.refresh()
 
+    def set_system_status(self, name: str, ok: bool) -> None:
+        self.system_statuses[name] = ok
+        self.refresh()
+
     def print_summary(
         self,
         profile_name: str,
@@ -152,6 +164,7 @@ class ConsoleNotifier:
         self.latest_lots.insert(
             0,
             ConsoleLotState(
+                lot_id=lot.id,
                 time=datetime.now().strftime("%H:%M:%S"),
                 title=lot.title or "-",
                 price=lot.price,
@@ -162,6 +175,7 @@ class ConsoleNotifier:
             ),
         )
         self.latest_lots = self.latest_lots[:self.MAX_LOTS]
+        self.latest_lots.sort(key=self._lot_sort_key)
         self.add_event(f"Новый лот: {lot.title}")
         self.refresh()
 
@@ -216,11 +230,12 @@ class ConsoleNotifier:
     def render(self) -> Panel:
         return Panel(
             Group(
+                self._system_status_line(),
                 self._header_table(),
-                self._profiles_table(),
                 self._lots_table(),
-                self._stats_and_events_table(),
-                self._controls_panel(),
+                self._profiles_table(),
+                self._stats_line(),
+                self._events_panel(),
                 self._status_bar(),
             ),
             title="[bold cyan]Skylots AI Assistant[/]",
@@ -233,120 +248,110 @@ class ConsoleNotifier:
         table.add_column(ratio=1)
         table.add_column(ratio=1)
         table.add_column(ratio=1)
+        table.add_column(ratio=1)
         table.add_row(
             self._metric("Статус", self.status, self._status_style(self.status)),
             self._metric(
-                "Текущее время",
+                "Время",
                 datetime.now().strftime("%H:%M:%S"),
                 "cyan",
             ),
             self._metric(
-                "До следующего скана",
+                "До скана",
                 f"{self.countdown} сек",
                 "cyan",
             ),
             self._metric("Профилей", str(self.profiles_loaded), "cyan"),
-        )
-        table.add_row(
             self._metric(
                 "Лотов в базе",
                 str(self.database_lots_count),
                 "cyan",
             ),
-            self._metric("Последний скан", self._last_scan(), "cyan"),
-            "",
-            "",
         )
         return Panel(table, title="ОБЗОР", border_style="blue")
 
+    def _system_status_line(self) -> Panel:
+        labels = []
+        for name in ("Internet", "Cookies", "Parser", "SQLite", "Profiles"):
+            ok = self.system_statuses.get(name, False)
+            style = "green" if ok else "red"
+            value = "OK" if ok else "Error"
+            labels.append(f"[{style}]{name}: {value}[/]")
+        return Panel("   ".join(labels), border_style="bright_black")
+
     def _profiles_table(self) -> Panel:
-        table = Table(expand=True)
-        table.add_column("Статус", style="bold")
-        table.add_column("Название профиля", style="bold")
-        table.add_column("URL / Ключевые слова", overflow="fold")
-        table.add_column("Получено", justify="right", style="cyan")
-        table.add_column("Новых", justify="right", style="green")
-        table.add_column("Последний скан", justify="right", style="cyan")
+        lines = [
+            (
+                f"{'Статус':<12} "
+                f"{'Профиль':<18} "
+                f"{'Получ':>6} "
+                f"{'Нов':>4} "
+                f"{'Скан':>8}  "
+                "URL"
+            )
+        ]
 
         if not self.profiles:
-            table.add_row(
-                "-",
-                "Профили не загружены",
-                "-",
-                "0",
-                "0",
-                "-",
-            )
+            lines.append("Профили не загружены")
+
         for profile in self.profiles.values():
-            table.add_row(
-                Text(profile.status, style=self._status_style(profile.status)),
-                profile.name,
-                profile.url,
-                str(profile.fetched),
-                str(profile.new_lots),
-                profile.last_scan,
+            lines.append(
+                f"{profile.status:<12} "
+                f"{self._trim(profile.name, 18):<18} "
+                f"{profile.fetched:>6} "
+                f"{profile.new_lots:>4} "
+                f"{profile.last_scan:>8}  "
+                f"{self._trim(profile.url, 12)}"
             )
 
-        return Panel(table, title="ПРОФИЛИ", border_style="blue")
+        return Panel(
+            Text("\n".join(lines)),
+            title="ПРОФИЛИ",
+            border_style="blue",
+        )
 
     def _lots_table(self) -> Panel:
-        table = Table(expand=True)
-        table.add_column("До конца", style="bold")
-        table.add_column("Осталось", style="bold")
-        table.add_column("Цена", justify="right", style="cyan")
-        table.add_column("Название лота", overflow="fold")
-        table.add_column("Продавец")
-        table.add_column("Ставки", justify="right")
-        table.add_column("Ссылка", overflow="fold")
+        table = Table(expand=True, padding=(0, 1), box=None)
+        table.add_column("ID", style="cyan", no_wrap=True)
+        table.add_column("До", style="bold", no_wrap=True)
+        table.add_column("Цена", justify="right", style="cyan", no_wrap=True)
+        table.add_column("Название", overflow="ellipsis", no_wrap=True)
+        table.add_column("Продавец", overflow="ellipsis", no_wrap=True)
+        table.add_column("Ст", justify="right")
+        table.add_column("URL", no_wrap=True)
 
         if not self.latest_lots:
             table.add_row("-", "-", "-", "Новых лотов нет", "-", "-", "-")
-        for lot in self.latest_lots:
+        for lot in sorted(self.latest_lots, key=self._lot_sort_key):
             remaining_style = self._remaining_style(lot.remaining_time)
             table.add_row(
-                Text(lot.remaining_time, style=remaining_style),
-                Text(lot.time, style="cyan"),
-                f"{lot.price} грн",
-                lot.title,
-                lot.seller,
+                lot.lot_id,
+                Text(self._short_remaining(lot.remaining_time), style=remaining_style),
+                str(lot.price),
+                self._trim(lot.title, 42),
+                self._trim(lot.seller, 16),
                 lot.bids,
-                lot.url,
+                Text("Открыть", style=f"link {lot.url} cyan"),
             )
 
         return Panel(table, title="НОВЫЕ ЛОТЫ", border_style="green")
 
-    def _stats_and_events_table(self) -> Table:
-        grid = Table.grid(expand=True)
-        grid.add_column(ratio=1)
-        grid.add_column(ratio=1)
-        grid.add_row(self._stats_panel(), self._events_panel())
-        return grid
-
-    def _stats_panel(self) -> Panel:
-        table = Table.grid(expand=True)
-        table.add_column()
-        table.add_column(justify="right")
-        table.add_row(
-            "Всего получено",
-            Text(str(self.total_fetched), style="cyan"),
+    def _stats_line(self) -> Panel:
+        stats = Text()
+        stats.append(f"Получ {self.total_fetched}", style="cyan")
+        stats.append("  |  ")
+        stats.append(f"Нов {self.total_new_lots}", style="green")
+        stats.append("  |  ")
+        stats.append(f"Изв {self.total_existing_lots}", style="yellow")
+        stats.append("  |  ")
+        stats.append(f"Нов/д {self.new_today}", style="green")
+        stats.append("  |  ")
+        stats.append(f"Всего/д {self.total_today}", style="cyan")
+        return Panel(
+            Align.center(stats),
+            title="СТАТИСТИКА",
+            border_style="magenta",
         )
-        table.add_row(
-            "Новых лотов",
-            Text(str(self.total_new_lots), style="green"),
-        )
-        table.add_row(
-            "Известных лотов",
-            Text(str(self.total_existing_lots), style="yellow"),
-        )
-        table.add_row(
-            "Новых сегодня",
-            Text(str(self.new_today), style="green"),
-        )
-        table.add_row(
-            "Всего сегодня",
-            Text(str(self.total_today), style="cyan"),
-        )
-        return Panel(table, title="СТАТИСТИКА", border_style="magenta")
 
     def _events_panel(self) -> Panel:
         if not self.events:
@@ -359,25 +364,11 @@ class ConsoleNotifier:
             border_style="yellow",
         )
 
-    @staticmethod
-    def _controls_panel() -> Panel:
-        controls = (
-            "S - Сканировать сейчас   "
-            "R - Обновить профили   "
-            "L - Список профилей   "
-            "Q - Выход   "
-            "CTRL+C - Выход"
-        )
-        return Panel(
-            Align.center(controls),
-            title="УПРАВЛЕНИЕ",
-            border_style="cyan",
-        )
-
     def _status_bar(self) -> Panel:
         text = (
-            f"[bold]{self.status}[/]    "
-            f"[cyan]До следующего скана: {self.countdown} сек[/]"
+            f"[bold]{self.status}[/] | "
+            f"[cyan]{self.countdown} сек[/] | "
+            "S скан | R профили | L список | Q/CTRL+C"
         )
         return Panel(text, border_style=self._status_style(self.status))
 
@@ -458,14 +449,20 @@ class ConsoleNotifier:
         minutes = ConsoleNotifier._extract_minutes(value)
         if minutes is None or minutes > 10:
             return "green"
-        if minutes >= 2:
+        if minutes >= 5:
             return "yellow"
+        if minutes >= 2:
+            return "orange1"
         return "red"
 
     @staticmethod
     def _extract_minutes(value: str) -> int | None:
-        hours_match = re.search(r"(\d+)\s*ч", value)
-        minutes_match = re.search(r"(\d+)\s*мин", value)
+        hours_match = re.search(r"(\d+)\s*(?:ч|h)", value, re.IGNORECASE)
+        minutes_match = re.search(
+            r"(\d+)\s*(?:мин|min|m)",
+            value,
+            re.IGNORECASE,
+        )
 
         minutes = 0
         if hours_match:
@@ -475,3 +472,29 @@ class ConsoleNotifier:
         if hours_match or minutes_match:
             return minutes
         return None
+
+    @staticmethod
+    def _lot_sort_key(lot: ConsoleLotState) -> tuple[int, str]:
+        minutes = ConsoleNotifier._extract_minutes(lot.remaining_time)
+        if minutes is None:
+            minutes = 10_000
+        return minutes, lot.time
+
+    @staticmethod
+    def _short_remaining(value: str) -> str:
+        minutes = ConsoleNotifier._extract_minutes(value)
+        if minutes is None:
+            return ConsoleNotifier._trim(value, 14)
+        if minutes >= 60:
+            hours = minutes // 60
+            rest = minutes % 60
+            if rest:
+                return f"{hours} ч {rest} мин"
+            return f"{hours} ч"
+        return f"{minutes} мин"
+
+    @staticmethod
+    def _trim(value: str, limit: int) -> str:
+        if len(value) <= limit:
+            return value
+        return f"{value[:limit - 1]}…"
