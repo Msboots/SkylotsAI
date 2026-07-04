@@ -66,6 +66,7 @@ class ConsoleNotifier:
     MAX_LOTS = 10
     MAX_ENDING_LOTS = 10
     MAX_EVENTS = 5
+    PANELS = ("lots", "profiles", "events")
 
     def __init__(self, live_enabled: bool = True) -> None:
         self.console = Console()
@@ -78,7 +79,9 @@ class ConsoleNotifier:
         self.profiles: dict[str, ConsoleProfileState] = {}
         self.latest_lots: list[ConsoleLotState] = []
         self.ending_lots: dict[str, list[ConsoleEndingLotState]] = {}
-        self.selected_hot_index = 0
+        self.active_panel = "lots"
+        self.selected_lot_index = 0
+        self.selected_event_index = 0
         self.events: list[str] = []
         self.monitor_mode = "multi"
         self.active_profile_id = ""
@@ -190,31 +193,77 @@ class ConsoleNotifier:
         }
         self.refresh()
 
-    def select_hot_lot(self, step: int) -> None:
-        hot_lots = self._hot_lots()
-        if not hot_lots:
-            self.selected_hot_index = 0
-            self.refresh()
-            return
-
-        self.selected_hot_index = (
-            self.selected_hot_index + step
-        ) % len(hot_lots)
+    def select_next_panel(self) -> None:
+        current_index = self.PANELS.index(self.active_panel)
+        self.active_panel = self.PANELS[
+            (current_index + 1) % len(self.PANELS)
+        ]
+        self._clamp_selection()
         self.refresh()
 
-    def open_selected_hot_lot(self) -> None:
-        hot_lots = self._hot_lots()
-        if not hot_lots:
-            self.add_event("HOT LOTS пуст")
-            return
+    def select_active_row(self, step: int) -> None:
+        if self.active_panel == "lots":
+            lots = self._selectable_lots()
+            if not lots:
+                self.selected_lot_index = 0
+                self.refresh()
+                return
+            self.selected_lot_index = (
+                self.selected_lot_index + step
+            ) % len(lots)
+        elif self.active_panel == "profiles":
+            self._select_profile_row(step)
+        elif self.active_panel == "events":
+            if not self.events:
+                self.selected_event_index = 0
+                self.refresh()
+                return
+            self.selected_event_index = (
+                self.selected_event_index + step
+            ) % min(len(self.events), self.MAX_EVENTS)
 
-        selected_lot = hot_lots[self.selected_hot_index]
-        if not selected_lot.url or selected_lot.url == "-":
-            self.add_event("У выбранного лота нет ссылки")
+        self.refresh()
+
+    def select_hot_lot(self, step: int) -> None:
+        self.active_panel = "lots"
+        self.select_active_row(step)
+
+    def open_selected_hot_lot(self) -> None:
+        self.open_selected_lot()
+
+    def open_selected_lot(self) -> None:
+        selected_lot = self.selected_lot()
+        if selected_lot is None:
+            self.add_event("Лот не выбран")
+            self.refresh()
             return
 
         webbrowser.open(selected_lot.url)
         self.add_event(f"Открыт лот: {selected_lot.lot_id}")
+        self.refresh()
+
+    def selected_lot(self) -> ConsoleEndingLotState | None:
+        lots = self._selectable_lots()
+        if not lots:
+            return None
+        self.selected_lot_index = min(self.selected_lot_index, len(lots) - 1)
+        return lots[self.selected_lot_index]
+
+    def selected_profile_id(self) -> str | None:
+        profiles = list(self.profiles.values())
+        if not profiles:
+            return None
+        if self.active_profile_id not in self.profiles:
+            return profiles[0].profile_id
+        return self.active_profile_id
+
+    def clear_events(self) -> None:
+        self.events = []
+        self.selected_event_index = 0
+        self.refresh()
+
+    def current_panel(self) -> str:
+        return self.active_panel
 
     def resume(self) -> None:
         if self.live_enabled and self.live is None:
@@ -257,6 +306,29 @@ class ConsoleNotifier:
             return int(interval_text)
         except ValueError:
             return None
+
+    def prompt_confirm(self, message: str) -> bool:
+        self.stop()
+        answer = input(f"{message} [y/N]: ").strip().lower()
+        return answer in {"y", "yes", "д", "да"}
+
+    def prompt_profile_edit(
+        self,
+        profile_name: str,
+        profile_url: str,
+    ) -> tuple[str, str] | None:
+        self.stop()
+        self.console.print(
+            f"[bold cyan]Редактирование профиля: {profile_name}[/]",
+        )
+        name = input(f"Новое название [{profile_name}]: ").strip()
+        url = input(f"Новая ссылка [{profile_url}]: ").strip()
+
+        next_name = name or profile_name
+        next_url = url or profile_url
+        if next_name == profile_name and next_url == profile_url:
+            return None
+        return next_name, next_url
 
     def show_profile_list(self, profiles: Sequence[SearchProfile]) -> None:
         self.stop()
@@ -464,44 +536,61 @@ class ConsoleNotifier:
         return Panel("   ".join(labels), border_style="bright_black")
 
     def _profiles_table(self) -> Panel:
-        lines = [
-            f"Режим: {self._mode_label()} | Активный профиль: {self._active_profile_name()}",
-            (
-                f"{'':<1} "
-                f"{'Вкл':<3} "
-                f"{'Профиль':<18} "
-                f"{'Режим':<7} "
-                f"{'Инт':>5} "
-                f"{'Получ':>6} "
-                f"{'Нов':>4} "
-                f"{'Скан':>8}"
-            )
-        ]
+        table = Table(expand=True, padding=(0, 1), box=None)
+        table.add_column("", no_wrap=True)
+        table.add_column("Вкл", no_wrap=True)
+        table.add_column("Профиль", overflow="ellipsis", no_wrap=True)
+        table.add_column("Режим", no_wrap=True)
+        table.add_column("Инт", justify="right", no_wrap=True)
+        table.add_column("Получ", justify="right", no_wrap=True)
+        table.add_column("Нов", justify="right", no_wrap=True)
+        table.add_column("Скан", justify="right", no_wrap=True)
 
         if not self.profiles:
-            lines.append(
+            table.add_row(
+                "",
+                "",
                 "Профили не найдены. "
                 "Нажмите A чтобы добавить профиль.",
+                "",
+                "",
+                "",
+                "",
+                "",
             )
 
         for profile in self.profiles.values():
             marker = "*" if profile.profile_id == self.active_profile_id else " "
             enabled = "✓" if profile.enabled else "✗"
             mode_status = self._profile_mode_status(profile)
-            lines.append(
-                f"{marker:<1} "
-                f"{enabled:<3} "
-                f"{self._trim(profile.name, 18):<18} "
-                f"{mode_status:<7} "
-                f"{profile.interval:>4}s "
-                f"{profile.fetched:>6} "
-                f"{profile.new_lots:>4} "
-                f"{profile.last_scan:>8}"
+            row_style = (
+                "reverse"
+                if (
+                    self.active_panel == "profiles"
+                    and profile.profile_id == self.active_profile_id
+                )
+                else None
+            )
+            table.add_row(
+                marker,
+                enabled,
+                self._trim(profile.name, 18),
+                mode_status,
+                f"{profile.interval}s",
+                str(profile.fetched),
+                str(profile.new_lots),
+                profile.last_scan,
+                style=row_style,
             )
 
+        title = self._panel_title("profiles", "ПРОФИЛИ")
+        subtitle = (
+            f"Режим: {self._mode_label()} | "
+            f"Активный профиль: {self._active_profile_name()}"
+        )
         return Panel(
-            Text("\n".join(lines)),
-            title="ПРОФИЛИ",
+            Group(Text(subtitle), table),
+            title=title,
             border_style="blue",
         )
 
@@ -542,14 +631,17 @@ class ConsoleNotifier:
         table.add_column("Профиль", overflow="ellipsis", no_wrap=True)
 
         hot_lots = self._hot_lots()
-        if self.selected_hot_index >= len(hot_lots):
-            self.selected_hot_index = 0
+        self._clamp_selection()
 
         if not hot_lots:
             table.add_row("-", "-", "-", "-", "Подходящих лотов нет", "-", "-")
 
         for index, lot in enumerate(hot_lots):
-            selected = index == self.selected_hot_index
+            selected = (
+                self.active_panel == "lots"
+                and self._selectable_lots() == hot_lots
+                and index == self.selected_lot_index
+            )
             row_style = "reverse" if selected else None
             table.add_row(
                 lot.lot_id,
@@ -565,7 +657,11 @@ class ConsoleNotifier:
                 style=row_style,
             )
 
-        return Panel(table, title="🔥 HOT LOTS", border_style="red")
+        return Panel(
+            table,
+            title=self._panel_title("lots", "🔥 HOT LOTS"),
+            border_style="red",
+        )
 
     def _ending_lots_table(self) -> Panel:
         table = Table(expand=True, padding=(0, 1), box=None)
@@ -580,8 +676,15 @@ class ConsoleNotifier:
         if not ending_lots:
             table.add_row("-", "-", "-", "Лотов нет", "-", "-")
 
-        for lot in ending_lots:
+        selectable_lots = self._selectable_lots()
+        for index, lot in enumerate(ending_lots):
             remaining_style = self._ending_remaining_style(lot.remaining_time)
+            selected = (
+                self.active_panel == "lots"
+                and selectable_lots == ending_lots
+                and index == self.selected_lot_index
+            )
+            row_style = "reverse" if selected else None
             table.add_row(
                 Text(self._short_remaining(lot.remaining_time), style=remaining_style),
                 self._price_text(lot.price),
@@ -589,11 +692,12 @@ class ConsoleNotifier:
                 self._trim(lot.title, 34),
                 self._trim(lot.seller, 14),
                 self._trim(lot.profile_name, 14),
+                style=row_style,
             )
 
         return Panel(
             table,
-            title="⏳ ENDING SOON",
+            title=self._panel_title("lots", "⏳ ENDING SOON"),
             border_style="yellow",
         )
 
@@ -616,27 +720,111 @@ class ConsoleNotifier:
         if not self.events:
             content = Text("Событий пока нет", style="dim")
         else:
-            content = Text("\n".join(self.events[:self.MAX_EVENTS]))
+            content = Text()
+            for index, event in enumerate(self.events[:self.MAX_EVENTS]):
+                style = (
+                    "reverse"
+                    if (
+                        self.active_panel == "events"
+                        and index == self.selected_event_index
+                    )
+                    else ""
+                )
+                content.append(event, style=style)
+                if index < min(len(self.events), self.MAX_EVENTS) - 1:
+                    content.append("\n")
         return Panel(
             content,
-            title="ПОСЛЕДНИЕ СОБЫТИЯ",
+            title=self._panel_title("events", "ПОСЛЕДНИЕ СОБЫТИЯ"),
             border_style="yellow",
         )
 
     def _status_bar(self) -> Panel:
-        text = (
-            f"[bold]{self.status}[/] | "
-            f"[cyan]{self.countdown} сек[/] | "
-            "↑/↓ HOT | ENTER открыть | A профиль | E вкл/выкл | "
-            "M режим | N/P профиль | I инт. | S скан | R обновить | "
-            "L список | Q"
-        )
+        text = self._context_menu()
         return Panel(text, border_style=self._status_style(self.status))
 
     def add_event(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.events.insert(0, f"[{timestamp}] {message}")
         self.events = self.events[:self.MAX_EVENTS]
+        self.refresh()
+
+    def _context_menu(self) -> str:
+        if not self._has_active_item():
+            return (
+                f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
+                "TAB панель | A добавить профиль | S сканировать | "
+                "R обновить | Q выход"
+            )
+
+        if self.active_panel == "lots":
+            return (
+                f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
+                "ENTER открыть лот | ↑↓ выбрать | TAB панель | "
+                "B продавца в чёрный список | F в избранное | "
+                "C копировать ссылку | Q выход"
+            )
+        if self.active_panel == "profiles":
+            return (
+                f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
+                "ENTER изменить | A добавить | E вкл/выкл | I интервал | "
+                "D удалить | M режим все/один | N/P профиль | "
+                "TAB панель | Q выход"
+            )
+        if self.active_panel == "events":
+            return (
+                f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
+                "C очистить события | TAB панель | Q выход"
+            )
+
+        return f"[bold]{self.status}[/] | TAB панель | Q выход"
+
+    def _has_active_item(self) -> bool:
+        if self.active_panel == "lots":
+            return self.selected_lot() is not None
+        if self.active_panel == "profiles":
+            return self.selected_profile_id() is not None
+        if self.active_panel == "events":
+            return bool(self.events)
+        return False
+
+    def _panel_title(self, panel: str, title: str) -> str:
+        if self.active_panel == panel:
+            return f"▶ {title}"
+        return title
+
+    def _clamp_selection(self) -> None:
+        lots = self._selectable_lots()
+        if lots:
+            self.selected_lot_index = min(self.selected_lot_index, len(lots) - 1)
+        else:
+            self.selected_lot_index = 0
+
+        if self.events:
+            self.selected_event_index = min(
+                self.selected_event_index,
+                min(len(self.events), self.MAX_EVENTS) - 1,
+            )
+        else:
+            self.selected_event_index = 0
+
+        if self.profiles and self.active_profile_id not in self.profiles:
+            self.active_profile_id = next(iter(self.profiles))
+
+    def _select_profile_row(self, step: int) -> None:
+        profiles = list(self.profiles.values())
+        if not profiles:
+            self.active_profile_id = ""
+            return
+
+        profile_ids = [profile.profile_id for profile in profiles]
+        try:
+            current_index = profile_ids.index(self.active_profile_id)
+        except ValueError:
+            current_index = 0
+
+        next_index = (current_index + step) % len(profile_ids)
+        self.active_profile_id = profile_ids[next_index]
 
     def _set_profiles_status(self, status: str) -> None:
         for profile in self.profiles.values():
@@ -791,6 +979,12 @@ class ConsoleNotifier:
                 hot_lots.append(lot)
 
         return sorted(hot_lots, key=self._hot_lot_sort_key)[:self.MAX_LOTS]
+
+    def _selectable_lots(self) -> list[ConsoleEndingLotState]:
+        hot_lots = self._hot_lots()
+        if hot_lots:
+            return hot_lots
+        return self._visible_ending_lots()
 
     @staticmethod
     def _hot_lot_sort_key(lot: ConsoleEndingLotState) -> tuple[int, int, str]:

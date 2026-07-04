@@ -6,12 +6,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
+from pathlib import Path
 import select
+import shutil
+import subprocess
 import sys
 import termios
 import time
 import tty
-from typing import Protocol
+from typing import Any, Protocol
 
 from skylots_ai.config import Config
 from skylots_ai.console import ConsoleNotifier
@@ -97,6 +100,37 @@ class Notifier(Protocol):
         ...
 
     def open_selected_hot_lot(self) -> None:
+        ...
+
+    def select_next_panel(self) -> None:
+        ...
+
+    def select_active_row(self, step: int) -> None:
+        ...
+
+    def open_selected_lot(self) -> None:
+        ...
+
+    def selected_lot(self) -> Any | None:
+        ...
+
+    def selected_profile_id(self) -> str | None:
+        ...
+
+    def current_panel(self) -> str:
+        ...
+
+    def clear_events(self) -> None:
+        ...
+
+    def prompt_confirm(self, message: str) -> bool:
+        ...
+
+    def prompt_profile_edit(
+        self,
+        profile_name: str,
+        profile_url: str,
+    ) -> tuple[str, str] | None:
         ...
 
 
@@ -266,11 +300,44 @@ class Monitor:
     def _handle_hotkey(self, key: str) -> str:
         normalized = key.lower()
 
+        if normalized == "tab":
+            self.notifier.select_next_panel()
+            return "wait"
+        if normalized == "up":
+            self.notifier.select_active_row(-1)
+            return "wait"
+        if normalized == "down":
+            self.notifier.select_active_row(1)
+            return "wait"
+        if normalized == "enter":
+            if self.notifier.current_panel() == "profiles":
+                self._edit_selected_profile()
+            elif self.notifier.current_panel() == "lots":
+                self.notifier.open_selected_lot()
+            return "wait"
         if normalized == "a":
             self._add_profile_from_dashboard()
             return "wait"
+        if normalized == "b":
+            if self.notifier.current_panel() == "lots":
+                self._blacklist_selected_seller()
+            return "wait"
+        if normalized == "c":
+            if self.notifier.current_panel() == "events":
+                self.notifier.clear_events()
+            elif self.notifier.current_panel() == "lots":
+                self._copy_selected_lot_url()
+            return "wait"
+        if normalized == "d":
+            if self.notifier.current_panel() == "profiles":
+                self._delete_selected_profile()
+            return "wait"
         if normalized == "e":
             self._toggle_active_profile()
+            return "wait"
+        if normalized == "f":
+            if self.notifier.current_panel() == "lots":
+                self._favorite_selected_lot()
             return "wait"
         if normalized == "m":
             self._toggle_monitor_mode()
@@ -295,15 +362,6 @@ class Monitor:
         if normalized == "l":
             self.notifier.show_profile_list(self.profile_manager.get_all())
             self.notifier.resume()
-            return "wait"
-        if normalized == "up":
-            self.notifier.select_hot_lot(-1)
-            return "wait"
-        if normalized == "down":
-            self.notifier.select_hot_lot(1)
-            return "wait"
-        if normalized == "enter":
-            self.notifier.open_selected_hot_lot()
             return "wait"
         if normalized == "q":
             self.logger.info("Skylots AI Assistant stopped by hotkey")
@@ -390,6 +448,12 @@ class Monitor:
     def _active_profile(self) -> SearchProfile | None:
         return self.profile_manager.get_by_id(self.active_profile_id)
 
+    def _selected_profile(self) -> SearchProfile | None:
+        selected_profile_id = self.notifier.selected_profile_id()
+        if selected_profile_id is None:
+            return None
+        return self.profile_manager.get_by_id(selected_profile_id)
+
     def _ensure_active_profile(self) -> None:
         profiles = self.profile_manager.get_all()
         if not profiles:
@@ -440,11 +504,13 @@ class Monitor:
             )
 
     def _toggle_active_profile(self) -> None:
-        active_profile = self._active_profile()
+        active_profile = self._selected_profile()
         if active_profile is None:
             self.notifier.add_event("Профили не найдены")
             return
 
+        self.active_profile_id = active_profile.id
+        self._save_monitor_settings()
         if active_profile.enabled:
             self.profile_manager.disable(active_profile.id)
             self.notifier.add_event(
@@ -465,11 +531,13 @@ class Monitor:
         )
 
     def _change_active_profile_interval(self) -> None:
-        active_profile = self._active_profile()
+        active_profile = self._selected_profile()
         if active_profile is None:
             self.notifier.add_event("Профили не найдены")
             return
 
+        self.active_profile_id = active_profile.id
+        self._save_monitor_settings()
         interval = self.notifier.prompt_profile_interval(active_profile.name)
         if interval is None or interval < 5:
             self.notifier.add_event(
@@ -489,10 +557,159 @@ class Monitor:
         )
         self.notifier.resume()
 
+    def _delete_selected_profile(self) -> None:
+        selected_profile = self._selected_profile()
+        if selected_profile is None:
+            self.notifier.add_event("Профили не найдены")
+            return
+
+        confirmed = self.notifier.prompt_confirm(
+            f"Удалить профиль {selected_profile.name}?",
+        )
+        if not confirmed:
+            self.notifier.add_event("Удаление профиля отменено")
+            self.notifier.resume()
+            return
+
+        if self.profile_manager.remove_profile(selected_profile.id):
+            self.profile_manager.load()
+            self._ensure_active_profile()
+            self._sync_profiles_to_dashboard()
+            self.notifier.add_event(
+                f"Профиль удалён: {selected_profile.name}",
+            )
+        else:
+            self.notifier.add_event("Не удалось удалить профиль")
+        self.notifier.resume()
+
+    def _edit_selected_profile(self) -> None:
+        selected_profile = self._selected_profile()
+        if selected_profile is None:
+            self.notifier.add_event("Профили не найдены")
+            return
+
+        result = self.notifier.prompt_profile_edit(
+            selected_profile.name,
+            selected_profile.url,
+        )
+        if result is None:
+            self.notifier.add_event("Редактирование профиля отменено")
+            self.notifier.resume()
+            return
+
+        name, url = result
+        error = self._validate_profile_input(name, url)
+        if error is not None:
+            self.notifier.add_event(error)
+            self.notifier.resume()
+            return
+
+        if self.profile_manager.update_profile(selected_profile.id, name, url):
+            self.profile_manager.load()
+            self.active_profile_id = selected_profile.id
+            self._save_monitor_settings()
+            self._sync_profiles_to_dashboard()
+            self.notifier.add_event(f"Профиль изменён: {name}")
+        else:
+            self.notifier.add_event("Не удалось изменить профиль")
+        self.notifier.resume()
+
+    def _copy_selected_lot_url(self) -> None:
+        lot = self.notifier.selected_lot()
+        if lot is None:
+            self.notifier.add_event("Лот не выбран")
+            return
+
+        url = str(getattr(lot, "url", ""))
+        if not url or url == "-":
+            self.notifier.add_event("У выбранного лота нет ссылки")
+            return
+
+        if self._copy_to_clipboard(url):
+            self.notifier.add_event("Ссылка скопирована")
+        else:
+            self.notifier.add_event(f"Ссылка: {url}")
+
+    def _blacklist_selected_seller(self) -> None:
+        lot = self.notifier.selected_lot()
+        if lot is None:
+            self.notifier.add_event("Лот не выбран")
+            return
+
+        seller = str(getattr(lot, "seller", "")).strip()
+        if not seller or seller == "-":
+            self.notifier.add_event("Продавец не указан")
+            return
+
+        self._append_unique_line(Path("settings/blacklist.txt"), seller)
+        self.notifier.add_event(f"Продавец в чёрном списке: {seller}")
+
+    def _favorite_selected_lot(self) -> None:
+        lot = self.notifier.selected_lot()
+        if lot is None:
+            self.notifier.add_event("Лот не выбран")
+            return
+
+        url = str(getattr(lot, "url", "")).strip()
+        if not url or url == "-":
+            self.notifier.add_event("У выбранного лота нет ссылки")
+            return
+
+        self._append_unique_line(Path("settings/favorites.txt"), url)
+        self.notifier.add_event("Лот добавлен в избранное")
+
     def _save_monitor_settings(self) -> None:
         self.config.monitor_mode = self.monitor_mode
         self.config.active_profile_id = self.active_profile_id
         self.config.save()
+
+    @staticmethod
+    def _append_unique_line(path: Path, value: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing_values: set[str] = set()
+        if path.exists():
+            existing_values = {
+                line.strip()
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            }
+
+        if value in existing_values:
+            return
+
+        with path.open("a", encoding="utf-8") as file:
+            file.write(f"{value}\n")
+
+    @staticmethod
+    def _copy_to_clipboard(value: str) -> bool:
+        commands = (
+            ("wl-copy",),
+            ("xclip", "-selection", "clipboard"),
+            ("xsel", "--clipboard", "--input"),
+        )
+        for command in commands:
+            executable = command[0]
+            if shutil.which(executable) is None:
+                continue
+            try:
+                subprocess.run(
+                    command,
+                    input=value,
+                    text=True,
+                    check=True,
+                    timeout=2,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return True
+            except (
+                OSError,
+                subprocess.CalledProcessError,
+                subprocess.TimeoutExpired,
+            ):
+                continue
+
+        return False
 
     @staticmethod
     def _validate_profile_input(name: str, url: str) -> str | None:
@@ -529,13 +746,15 @@ class Monitor:
             return ""
 
         key = sys.stdin.read(1)
+        if key == "\t":
+            return "tab"
         if key in {"\n", "\r"}:
             return "enter"
         if key != "\x1b":
             return key
 
         sequence = ""
-        while select.select([sys.stdin], [], [], 0.01)[0]:
+        while select.select([sys.stdin], [], [], 0.05)[0]:
             sequence += sys.stdin.read(1)
 
         if sequence == "[A":

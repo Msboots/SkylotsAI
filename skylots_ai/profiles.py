@@ -118,6 +118,21 @@ class ProfileManager:
         self.save()
         return True
 
+    def update_profile(
+        self,
+        profile_id: str,
+        name: str,
+        url: str,
+    ) -> bool:
+        profile = self._find_profile(profile_id)
+        if profile is None:
+            return False
+
+        profile.name = name
+        profile.url = url
+        self.save()
+        return True
+
     def enable(self, profile_id: str) -> bool:
         return self._set_enabled(profile_id, True)
 
