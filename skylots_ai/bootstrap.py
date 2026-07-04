@@ -1,119 +1,86 @@
+"""
+Проверка и инициализация структуры проекта.
+"""
+
 from pathlib import Path
 import json
-import sqlite3
+
+from skylots_ai import __version__
+from skylots_ai.database import Database
+from skylots_ai.logger import LOG_FILE, setup
+from skylots_ai.models import AppSettings
 
 
 class Bootstrap:
-    def __init__(self):
-        self.root = Path.cwd()
+
+    FOLDERS = ("settings", "data", "logs", "cache")
+
+    DEFAULT_FILES = {
+        "config.json": AppSettings().to_dict(),
+        "keywords.txt": "",
+        "blacklist.txt": "",
+        "favorites.txt": "",
+        "whitelist.txt": "",
+    }
+
+    def __init__(self, root: Path | None = None):
+        self.root = root or Path.cwd()
+        self.status: list[str] = []
 
     def run(self):
-        print("=" * 50)
-        print("Skylots AI Assistant")
-        print("=" * 50)
-
+        self._print_header()
         self.create_folders()
         self.create_files()
         self.create_database()
-
-        print("\nInitialization complete.")
+        self.initialize_logger()
+        self._print_status()
 
     def create_folders(self):
-
-        for folder in (
-            "settings",
-            "data",
-            "logs",
-            "cache"
-        ):
+        for folder in self.FOLDERS:
             path = self.root / folder
-
             path.mkdir(exist_ok=True)
-
-            print(f"[ OK ] {folder}")
+            self._ok(folder)
 
     def create_files(self):
-
-        files = {
-
-            "config.json": {
-                "check_interval": 60,
-                "max_price": 20,
-                "max_minutes": 15,
-                "telegram": False,
-                "sound": True
-            },
-
-            "keywords.txt": "",
-
-            "blacklist.txt": "",
-
-            "favorites.txt": "",
-
-            "whitelist.txt": ""
-
-        }
-
         settings = self.root / "settings"
 
-        for filename, content in files.items():
-
+        for filename, content in self.DEFAULT_FILES.items():
             file = settings / filename
 
             if file.exists():
-
-                print(f"[ OK ] {filename}")
-
+                self._ok(filename)
                 continue
 
             if filename.endswith(".json"):
-
                 file.write_text(
-                    json.dumps(content, indent=4),
-                    encoding="utf-8"
+                    json.dumps(content, indent=4, ensure_ascii=False),
+                    encoding="utf-8",
                 )
-
             else:
+                file.write_text(content, encoding="utf-8")
 
-                file.write_text(
-                    content,
-                    encoding="utf-8"
-                )
-
-            print(f"[ OK ] {filename}")
+            self._ok(f"{filename} (created)")
 
     def create_database(self):
+        Database(self.root / Database.DB_PATH).initialize()
+        self._ok("skylots.db")
 
-        db = self.root / "data" / "skylots.db"
+    def initialize_logger(self):
+        logger = setup(self.root)
+        logger.info("Skylots AI Assistant v%s — core initialized", __version__)
+        self._ok(f"logger -> logs/{LOG_FILE}")
 
-        conn = sqlite3.connect(db)
+    def _print_header(self):
+        print("=" * 50)
+        print(f"Skylots AI Assistant v{__version__}")
+        print("=" * 50)
 
-        cur = conn.cursor()
+    def _print_status(self):
+        print("\n" + "-" * 50)
+        print("Status: ready")
+        print("-" * 50)
 
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS lots(
-
-            id TEXT PRIMARY KEY,
-
-            title TEXT,
-
-            seller TEXT,
-
-            price INTEGER,
-
-            url TEXT,
-
-            end_time TEXT,
-
-            first_seen TEXT,
-
-            last_seen TEXT
-
-        )
-        """)
-
-        conn.commit()
-
-        conn.close()
-
-        print("[ OK ] skylots.db")
+    def _ok(self, message: str):
+        line = f"[ OK ] {message}"
+        print(line)
+        self.status.append(line)
