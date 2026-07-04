@@ -2,3 +2,4 @@ requests
 beautifulsoup4
 lxml
 browser-cookie3
+rich

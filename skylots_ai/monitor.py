@@ -24,8 +24,12 @@ class Notifier(Protocol):
         self,
         profiles: list[str],
         database_lots_count: int,
-        status: str = "RUNNING",
+        status: str = "РАБОТАЕТ",
+        profile_urls: dict[str, str] | None = None,
     ) -> None:
+        ...
+
+    def stop(self) -> None:
         ...
 
     def set_status(self, status: str) -> None:
@@ -91,6 +95,8 @@ class Monitor:
         self.notifier.start(
             profiles=[profile.name for profile in profiles],
             database_lots_count=self.database.count_lots(),
+            status="РАБОТАЕТ",
+            profile_urls={profile.name: profile.url for profile in profiles},
         )
 
         try:
@@ -100,11 +106,18 @@ class Monitor:
                     self._wait()
                 except Exception as exc:
                     self.logger.exception("Monitoring loop error: %s", exc)
-                    self.notifier.set_status("Error. Check logs.")
+                    self.notifier.set_status(
+                        "ОШИБКА. Подробности в logs/skylots.log.",
+                    )
                     self._wait()
         except KeyboardInterrupt:
             self.logger.info("Skylots AI Assistant stopped by user")
-            self.notifier.print_status("Stopping...", ["Good bye."])
+            self.notifier.print_status(
+                "Остановка...",
+                ["До свидания."],
+            )
+        finally:
+            self.notifier.stop()
 
     def single_run(self) -> list[ProfileScanSummary]:
         summaries: list[ProfileScanSummary] = []

@@ -19,7 +19,9 @@ def main() -> None:
     monitor = Monitor()
 
     if args.once:
-        monitor.single_run()
+        summaries = monitor.single_run()
+        if hasattr(monitor.notifier, "print_once_summary"):
+            monitor.notifier.print_once_summary(summaries)
         return
 
     monitor.run()
