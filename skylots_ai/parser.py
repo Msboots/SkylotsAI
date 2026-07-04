@@ -23,15 +23,13 @@ class Parser:
         self,
         config: Config | None = None,
         session: requests.Session | None = None,
-    ):
+    ) -> None:
         self.config = config or Config()
         self.session = session or self._create_session()
         self.logger = self._get_logger()
         self._html: str = ""
 
-    def fetch(self) -> str:
-        url = self._build_search_url()
-
+    def fetch(self, url: str) -> str:
         try:
             response = self.session.get(url, timeout=30)
             response.raise_for_status()
@@ -44,9 +42,6 @@ class Parser:
 
     def parse(self, html: str | None = None) -> list[Lot]:
         source = html if html is not None else self._html
-
-        if not source:
-            source = self.fetch()
 
         if not source:
             return []
@@ -86,15 +81,6 @@ class Parser:
     def parse_city(text: str) -> str | None:
         city = text.strip()
         return city or None
-
-    def _build_search_url(self) -> str:
-        max_price = self.config.max_price
-        return (
-            f"{BASE_URL}/search.php?"
-            f"search=&desc_check=0&catid=0&seller_id=0&buy_now=0&ex=0&end_ex=0"
-            f"&price_from=&price_to={max_price}"
-            f"&items_from=&items_to=&city=&orderby=5"
-        )
 
     def _create_session(self) -> requests.Session:
         session = requests.Session()

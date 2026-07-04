@@ -4,7 +4,7 @@ Skylots AI Assistant — точка входа.
 
 import argparse
 
-from skylots_ai.monitor import Monitor
+from skylots_ai.monitor import Monitor, ProfileScanSummary
 
 
 def main() -> None:
@@ -19,16 +19,22 @@ def main() -> None:
     monitor = Monitor()
 
     if args.once:
-        summary = monitor.single_run()
-        print(
-            "Summary: "
-            f"total={summary.total_lots}, "
-            f"new={summary.new_lots}, "
-            f"existing={summary.existing_lots}"
-        )
+        summaries = monitor.single_run()
+        print_summary(summaries)
         return
 
     monitor.run()
+
+
+def print_summary(summaries: list[ProfileScanSummary]) -> None:
+    for index, summary in enumerate(summaries):
+        print(f"Profile: {summary.profile_name}")
+        print(f"Fetched: {summary.fetched}")
+        print(f"New: {summary.new_lots}")
+        print(f"Existing: {summary.existing_lots}")
+
+        if index != len(summaries) - 1:
+            print("--------------------------------")
 
 
 if __name__ == "__main__":

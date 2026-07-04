@@ -1,0 +1,9 @@
+[
+    {
+        "id": "hot",
+        "name": "Hot Auctions",
+        "url": "https://skylots.org/search.php?orderby=5",
+        "enabled": true,
+        "interval": 30
+    }
+]
