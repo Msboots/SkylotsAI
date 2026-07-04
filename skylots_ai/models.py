@@ -13,6 +13,8 @@ class AppSettings:
     max_minutes: int = 15
     telegram: bool = False
     sound: bool = True
+    monitor_mode: str = "multi"
+    active_profile_id: str = ""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AppSettings":

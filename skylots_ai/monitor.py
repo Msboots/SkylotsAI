@@ -48,7 +48,12 @@ class Notifier(Protocol):
     def set_system_status(self, name: str, ok: bool) -> None:
         ...
 
-    def set_profiles(self, profiles: Sequence[SearchProfile]) -> None:
+    def set_profiles(
+        self,
+        profiles: Sequence[SearchProfile],
+        monitor_mode: str = "multi",
+        active_profile_id: str = "",
+    ) -> None:
         ...
 
     def resume(self) -> None:
@@ -58,6 +63,9 @@ class Notifier(Protocol):
         ...
 
     def show_profile_list(self, profiles: Sequence[SearchProfile]) -> None:
+        ...
+
+    def prompt_profile_interval(self, profile_name: str) -> int | None:
         ...
 
     def add_event(self, message: str) -> None:
@@ -109,19 +117,26 @@ class Monitor:
         self.notifier = notifier or ConsoleNotifier()
         self.logger = self._get_logger()
         self.database.initialize()
+        self.monitor_mode = self.config.monitor_mode
+        self.active_profile_id = self.config.active_profile_id
+        self._ensure_active_profile()
 
     def run(self) -> None:
-        profiles = self.profile_manager.get_enabled()
+        profiles = self.profile_manager.get_all()
         self.logger.info("Skylots AI Assistant started")
-        self.logger.info("Enabled profiles: %s", len(profiles))
+        self.logger.info("Profiles loaded: %s", len(profiles))
         self.notifier.start(
             profiles=[profile.name for profile in profiles],
             database_lots_count=self.database.count_lots(),
             status="РАБОТАЕТ",
             profile_urls={profile.name: profile.url for profile in profiles},
         )
+        self._sync_profiles_to_dashboard()
         self.notifier.set_system_status("SQLite", True)
-        self.notifier.set_system_status("Profiles", bool(profiles))
+        self.notifier.set_system_status(
+            "Profiles",
+            bool(self.profile_manager.get_all()),
+        )
         self.notifier.set_system_status(
             "Cookies",
             bool(self.parser.session.cookies),
@@ -152,7 +167,7 @@ class Monitor:
     def single_run(self) -> list[ProfileScanSummary]:
         summaries: list[ProfileScanSummary] = []
 
-        for profile in self.profile_manager.get_enabled():
+        for profile in self._profiles_to_scan():
             summaries.append(self._scan_profile(profile))
 
         return summaries
@@ -208,7 +223,7 @@ class Monitor:
         return datetime.now(timezone.utc).isoformat()
 
     def _wait(self) -> bool:
-        seconds = self.config.check_interval
+        seconds = self._current_wait_seconds()
         self.logger.info("Waiting %s seconds", seconds)
         terminal_settings = self._enable_hotkeys()
 
@@ -221,9 +236,12 @@ class Monitor:
 
                 self._restore_terminal(terminal_settings)
                 terminal_settings = None
-                should_continue = self._handle_hotkey(key)
-                if not should_continue:
+                action = self._handle_hotkey(key)
+                if action == "stop":
                     return False
+                if action == "scan":
+                    self.notifier.set_countdown(0)
+                    return True
 
                 terminal_settings = self._enable_hotkeys()
         finally:
@@ -232,28 +250,48 @@ class Monitor:
         self.notifier.set_countdown(0)
         return True
 
-    def _handle_hotkey(self, key: str) -> bool:
+    def _handle_hotkey(self, key: str) -> str:
         normalized = key.lower()
 
         if normalized == "a":
             self._add_profile_from_dashboard()
-            return True
+            return "wait"
+        if normalized == "e":
+            self._toggle_active_profile()
+            return "wait"
+        if normalized == "m":
+            self._toggle_monitor_mode()
+            return "wait"
+        if normalized == "n":
+            self._select_relative_profile(1)
+            return "wait"
+        if normalized == "p":
+            self._select_relative_profile(-1)
+            return "wait"
+        if normalized == "i":
+            self._change_active_profile_interval()
+            return "wait"
         if normalized == "r":
             self._reload_profiles()
-            return True
+            return "wait"
+        if normalized == "s":
+            self.notifier.add_event(
+                "Сканирование запущено вручную",
+            )
+            return "scan"
         if normalized == "l":
             self.notifier.show_profile_list(self.profile_manager.get_all())
             self.notifier.resume()
-            return True
+            return "wait"
         if normalized == "q":
             self.logger.info("Skylots AI Assistant stopped by hotkey")
             self.notifier.print_status(
                 "Остановка...",
                 ["До свидания."],
             )
-            return False
+            return "stop"
 
-        return True
+        return "wait"
 
     def _add_profile_from_dashboard(self) -> None:
         name, url, interval = self.notifier.prompt_new_profile(
@@ -283,15 +321,152 @@ class Monitor:
 
     def _reload_profiles(self) -> None:
         self.profile_manager.load()
+        self._ensure_active_profile()
         self._sync_profiles_to_dashboard()
         self.notifier.set_system_status(
             "Profiles",
-            bool(self.profile_manager.get_enabled()),
+            bool(self.profile_manager.get_all()),
         )
         self.notifier.add_event("Профили обновлены")
 
     def _sync_profiles_to_dashboard(self) -> None:
-        self.notifier.set_profiles(self.profile_manager.get_enabled())
+        self.notifier.set_profiles(
+            self.profile_manager.get_all(),
+            monitor_mode=self.monitor_mode,
+            active_profile_id=self.active_profile_id,
+        )
+
+    def _profiles_to_scan(self) -> list[SearchProfile]:
+        if self.monitor_mode == "multi":
+            return self.profile_manager.get_enabled()
+
+        active_profile = self._active_profile()
+        if active_profile is None or not active_profile.enabled:
+            return []
+        return [active_profile]
+
+    def _current_wait_seconds(self) -> int:
+        if self.monitor_mode == "single":
+            active_profile = self._active_profile()
+            if active_profile is not None and active_profile.enabled:
+                return max(active_profile.interval, 5)
+            return self.config.check_interval
+
+        intervals = [
+            profile.interval
+            for profile in self.profile_manager.get_enabled()
+            if profile.interval >= 5
+        ]
+        if intervals:
+            return min(intervals)
+        return self.config.check_interval
+
+    def _active_profile(self) -> SearchProfile | None:
+        return self.profile_manager.get_by_id(self.active_profile_id)
+
+    def _ensure_active_profile(self) -> None:
+        profiles = self.profile_manager.get_all()
+        if not profiles:
+            self.active_profile_id = ""
+            self._save_monitor_settings()
+            return
+
+        if self.profile_manager.get_by_id(self.active_profile_id) is None:
+            self.active_profile_id = profiles[0].id
+            self._save_monitor_settings()
+
+    def _toggle_monitor_mode(self) -> None:
+        self.monitor_mode = "single" if self.monitor_mode == "multi" else "multi"
+        self.config.monitor_mode = self.monitor_mode
+        self._ensure_active_profile()
+        self._save_monitor_settings()
+        self._sync_profiles_to_dashboard()
+        event = (
+            "Режим: все профили"
+            if self.monitor_mode == "multi"
+            else "Режим: один профиль"
+        )
+        self.notifier.add_event(event)
+
+    def _select_relative_profile(self, step: int) -> None:
+        profiles = self.profile_manager.get_all()
+        if not profiles:
+            self.active_profile_id = ""
+            self._save_monitor_settings()
+            self._sync_profiles_to_dashboard()
+            self.notifier.add_event("Профили не найдены")
+            return
+
+        profile_ids = [profile.id for profile in profiles]
+        try:
+            current_index = profile_ids.index(self.active_profile_id)
+        except ValueError:
+            current_index = 0
+
+        next_index = (current_index + step) % len(profile_ids)
+        self.active_profile_id = profile_ids[next_index]
+        self._save_monitor_settings()
+        self._sync_profiles_to_dashboard()
+        active_profile = self._active_profile()
+        if active_profile is not None:
+            self.notifier.add_event(
+                f"Активный профиль: {active_profile.name}",
+            )
+
+    def _toggle_active_profile(self) -> None:
+        active_profile = self._active_profile()
+        if active_profile is None:
+            self.notifier.add_event("Профили не найдены")
+            return
+
+        if active_profile.enabled:
+            self.profile_manager.disable(active_profile.id)
+            self.notifier.add_event(
+                f"Профиль отключен: {active_profile.name}",
+            )
+        else:
+            self.profile_manager.enable(active_profile.id)
+            self.notifier.add_event(
+                f"Профиль включен: {active_profile.name}",
+            )
+
+        self.profile_manager.load()
+        self._ensure_active_profile()
+        self._sync_profiles_to_dashboard()
+        self.notifier.set_system_status(
+            "Profiles",
+            bool(self.profile_manager.get_all()),
+        )
+
+    def _change_active_profile_interval(self) -> None:
+        active_profile = self._active_profile()
+        if active_profile is None:
+            self.notifier.add_event("Профили не найдены")
+            return
+
+        interval = self.notifier.prompt_profile_interval(active_profile.name)
+        if interval is None or interval < 5:
+            self.notifier.add_event(
+                "Ошибка: интервал должен быть >= 5",
+            )
+            self.notifier.resume()
+            return
+
+        self.profile_manager.update_interval(active_profile.id, interval)
+        self.profile_manager.load()
+        self._sync_profiles_to_dashboard()
+        self.notifier.add_event(
+            (
+                f"Интервал профиля {active_profile.name} "
+                f"изменён на {interval} сек"
+            ),
+        )
+        self.notifier.resume()
+
+    def _save_monitor_settings(self) -> None:
+        self.config.monitor_mode = self.monitor_mode
+        self.config.active_profile_id = self.active_profile_id
+        self.config.save()
 
     @staticmethod
     def _validate_profile_input(name: str, url: str) -> str | None:

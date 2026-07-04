@@ -73,6 +73,9 @@ class ProfileManager:
     def get_enabled(self) -> list[SearchProfile]:
         return [profile for profile in self.profiles if profile.enabled]
 
+    def get_by_id(self, profile_id: str) -> SearchProfile | None:
+        return self._find_profile(profile_id)
+
     def add_profile(
         self,
         name: str,

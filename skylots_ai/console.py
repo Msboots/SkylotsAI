@@ -20,8 +20,11 @@ from skylots_ai.profiles import SearchProfile
 
 @dataclass
 class ConsoleProfileState:
+    profile_id: str
     name: str
     url: str = "-"
+    enabled: bool = True
+    interval: int = 30
     status: str = "ОЖИДАНИЕ"
     fetched: int = 0
     new_lots: int = 0
@@ -59,6 +62,8 @@ class ConsoleNotifier:
         self.profiles: dict[str, ConsoleProfileState] = {}
         self.latest_lots: list[ConsoleLotState] = []
         self.events: list[str] = []
+        self.monitor_mode = "multi"
+        self.active_profile_id = ""
         self.total_fetched = 0
         self.total_new_lots = 0
         self.total_existing_lots = 0
@@ -85,6 +90,7 @@ class ConsoleNotifier:
         self.database_lots_count = database_lots_count
         self.profiles = {
             name: ConsoleProfileState(
+                profile_id=name,
                 name=name,
                 url=(profile_urls or {}).get(name, "-"),
             )
@@ -132,15 +138,25 @@ class ConsoleNotifier:
         self.system_statuses[name] = ok
         self.refresh()
 
-    def set_profiles(self, profiles: Sequence[SearchProfile]) -> None:
+    def set_profiles(
+        self,
+        profiles: Sequence[SearchProfile],
+        monitor_mode: str = "multi",
+        active_profile_id: str = "",
+    ) -> None:
         existing = self.profiles
+        self.monitor_mode = monitor_mode
+        self.active_profile_id = active_profile_id
         self.profiles_loaded = len(profiles)
         self.profiles = {}
         for profile in profiles:
-            current = existing.get(profile.name)
-            self.profiles[profile.name] = ConsoleProfileState(
+            current = existing.get(profile.id)
+            self.profiles[profile.id] = ConsoleProfileState(
+                profile_id=profile.id,
                 name=profile.name,
                 url=profile.url,
+                enabled=profile.enabled,
+                interval=profile.interval,
                 status=current.status if current else "ОЖИДАНИЕ",
                 fetched=current.fetched if current else 0,
                 new_lots=current.new_lots if current else 0,
@@ -177,6 +193,19 @@ class ConsoleNotifier:
 
         return name, url, interval
 
+    def prompt_profile_interval(self, profile_name: str) -> int | None:
+        self.stop()
+        self.console.print(
+            f"[bold cyan]Интервал профиля: {profile_name}[/]",
+        )
+        interval_text = input(
+            "Новый интервал проверки в секундах: ",
+        ).strip()
+        try:
+            return int(interval_text)
+        except ValueError:
+            return None
+
     def show_profile_list(self, profiles: Sequence[SearchProfile]) -> None:
         self.stop()
         table = Table(title="Список профилей", box=None)
@@ -204,10 +233,13 @@ class ConsoleNotifier:
         new_lots: int,
     ) -> None:
         self._reset_today_if_needed()
-        profile = self.profiles.setdefault(
-            profile_name,
-            ConsoleProfileState(name=profile_name),
-        )
+        profile = self._find_profile_state(profile_name)
+        if profile is None:
+            profile = ConsoleProfileState(
+                profile_id=profile_name,
+                name=profile_name,
+            )
+            self.profiles[profile.profile_id] = profile
         profile.status = "РАБОТАЕТ"
         profile.fetched = fetched
         profile.new_lots = new_lots
@@ -315,8 +347,11 @@ class ConsoleNotifier:
         table.add_column(ratio=1)
         table.add_column(ratio=1)
         table.add_column(ratio=1)
+        table.add_column(ratio=1)
         table.add_row(
             self._metric("Статус", self.status, self._status_style(self.status)),
+            self._metric("Режим", self._mode_label(), "cyan"),
+            self._metric("Активный", self._active_profile_name(), "cyan"),
             self._metric(
                 "Время",
                 datetime.now().strftime("%H:%M:%S"),
@@ -348,26 +383,36 @@ class ConsoleNotifier:
     def _profiles_table(self) -> Panel:
         lines = [
             (
-                f"{'Статус':<12} "
+                f"{'':<1} "
+                f"{'Вкл':<3} "
                 f"{'Профиль':<18} "
+                f"{'Режим':<7} "
+                f"{'Инт':>5} "
                 f"{'Получ':>6} "
                 f"{'Нов':>4} "
-                f"{'Скан':>8}  "
-                "URL"
+                f"{'Скан':>8}"
             )
         ]
 
         if not self.profiles:
-            lines.append("Профили не загружены")
+            lines.append(
+                "Профили не найдены. "
+                "Нажмите A чтобы добавить профиль.",
+            )
 
         for profile in self.profiles.values():
+            marker = "*" if profile.profile_id == self.active_profile_id else " "
+            enabled = "✓" if profile.enabled else "✗"
+            mode_status = self._profile_mode_status(profile)
             lines.append(
-                f"{profile.status:<12} "
+                f"{marker:<1} "
+                f"{enabled:<3} "
                 f"{self._trim(profile.name, 18):<18} "
+                f"{mode_status:<7} "
+                f"{profile.interval:>4}s "
                 f"{profile.fetched:>6} "
                 f"{profile.new_lots:>4} "
-                f"{profile.last_scan:>8}  "
-                f"{self._trim(profile.url, 12)}"
+                f"{profile.last_scan:>8}"
             )
 
         return Panel(
@@ -434,7 +479,8 @@ class ConsoleNotifier:
         text = (
             f"[bold]{self.status}[/] | "
             f"[cyan]{self.countdown} сек[/] | "
-            "A добавить | R обновить | L список | Q/CTRL+C"
+            "A добавить | E вкл/выкл | M режим | "
+            "N/P профиль | I инт. | R обновить | S скан | Q"
         )
         return Panel(text, border_style=self._status_style(self.status))
 
@@ -448,9 +494,15 @@ class ConsoleNotifier:
             profile.status = status
 
     def _set_profile_status(self, profile_name: str, status: str) -> None:
-        profile = self.profiles.get(profile_name)
+        profile = self._find_profile_state(profile_name)
         if profile is not None:
             profile.status = status
+
+    def _find_profile_state(self, profile_name: str) -> ConsoleProfileState | None:
+        for profile in self.profiles.values():
+            if profile.name == profile_name:
+                return profile
+        return None
 
     def _reset_today_if_needed(self) -> None:
         current_day = date.today()
@@ -473,6 +525,24 @@ class ConsoleNotifier:
         text.append(f"{label}\n", style="dim")
         text.append(value, style=f"bold {style}")
         return text
+
+    def _mode_label(self) -> str:
+        if self.monitor_mode == "multi":
+            return "Все профили"
+        return "Один профиль"
+
+    def _active_profile_name(self) -> str:
+        profile = self.profiles.get(self.active_profile_id)
+        if profile is None:
+            return "-"
+        return self._trim(profile.name, 18)
+
+    def _profile_mode_status(self, profile: ConsoleProfileState) -> str:
+        if self.monitor_mode == "multi":
+            return "все" if profile.enabled else "выкл"
+        if profile.profile_id == self.active_profile_id:
+            return "актив"
+        return "-"
 
     @staticmethod
     def _translate_status(status: str) -> str:
