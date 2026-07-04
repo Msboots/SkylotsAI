@@ -2,16 +2,41 @@
 Мониторинг лотов Skylots.
 """
 
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
 import time
+from typing import Protocol
 
 from skylots_ai.config import Config
+from skylots_ai.console import ConsoleNotifier
 from skylots_ai.database import Database
 from skylots_ai.logger import LOG_NAME, setup
+from skylots_ai.models import Lot
 from skylots_ai.parser import Parser
 from skylots_ai.profiles import ProfileManager, SearchProfile
+
+
+class Notifier(Protocol):
+
+    def print_status(
+        self,
+        title: str,
+        lines: Sequence[str] | None = None,
+    ) -> None:
+        ...
+
+    def print_summary(
+        self,
+        profile_name: str,
+        fetched: int,
+        new_lots: int,
+    ) -> None:
+        ...
+
+    def print_new_lot(self, lot: Lot) -> None:
+        ...
 
 
 @dataclass
@@ -21,6 +46,7 @@ class ProfileScanSummary:
     fetched: int = 0
     new_lots: int = 0
     existing_lots: int = 0
+    new_lot_items: list[Lot] = field(default_factory=list)
 
 
 class Monitor:
@@ -31,33 +57,38 @@ class Monitor:
         database: Database | None = None,
         parser: Parser | None = None,
         profile_manager: ProfileManager | None = None,
+        notifier: Notifier | None = None,
     ) -> None:
         self.config = config or Config()
         self.database = database or Database()
         self.parser = parser or Parser(self.config)
         self.profile_manager = profile_manager or ProfileManager()
+        self.notifier = notifier or ConsoleNotifier()
         self.logger = self._get_logger()
         self.database.initialize()
 
     def run(self) -> None:
-        while True:
-            self._scan_due_profiles()
-            time.sleep(self._sleep_seconds())
+        profiles_count = len(self.profile_manager.get_enabled())
+        self.logger.info("Skylots AI Assistant started")
+        self.logger.info("Enabled profiles: %s", profiles_count)
+        self.notifier.print_status(
+            "Skylots AI Assistant",
+            ["Started", f"Profiles: {profiles_count}"],
+        )
+
+        try:
+            while True:
+                self.single_run()
+                self._wait()
+        except KeyboardInterrupt:
+            self.logger.info("Skylots AI Assistant stopped by user")
+            self.notifier.print_status("Stopped")
 
     def single_run(self) -> list[ProfileScanSummary]:
         summaries: list[ProfileScanSummary] = []
 
         for profile in self.profile_manager.get_enabled():
             summaries.append(self._scan_profile(profile))
-
-        return summaries
-
-    def _scan_due_profiles(self) -> list[ProfileScanSummary]:
-        summaries: list[ProfileScanSummary] = []
-
-        for profile in self.profile_manager.get_enabled():
-            if self._is_due(profile):
-                summaries.append(self._scan_profile(profile))
 
         return summaries
 
@@ -79,6 +110,8 @@ class Monitor:
             if existing_lot is None:
                 self.database.insert_lot(lot, seen_at)
                 summary.new_lots += 1
+                summary.new_lot_items.append(lot)
+                self.logger.info("New lot: %s | %s", lot.title, lot.url)
             else:
                 self.database.update_last_seen(lot.id, seen_at)
                 summary.existing_lots += 1
@@ -88,47 +121,26 @@ class Monitor:
         self.logger.info("New lots: %s", summary.new_lots)
         self.logger.info("Existing lots: %s", summary.existing_lots)
 
+        self.notifier.print_summary(
+            profile_name=summary.profile_name,
+            fetched=summary.fetched,
+            new_lots=summary.new_lots,
+        )
+
+        for lot in summary.new_lot_items:
+            self.notifier.print_new_lot(lot)
+
         return summary
 
     @staticmethod
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def _is_due(self, profile: SearchProfile) -> bool:
-        if profile.last_scan is None:
-            return True
-
-        try:
-            last_scan = datetime.fromisoformat(profile.last_scan)
-        except ValueError:
-            return True
-
-        elapsed = datetime.now(timezone.utc) - last_scan
-        return elapsed.total_seconds() >= profile.interval
-
-    def _sleep_seconds(self) -> int:
-        enabled_profiles = self.profile_manager.get_enabled()
-
-        if not enabled_profiles:
-            return self.config.check_interval
-
-        now = datetime.now(timezone.utc)
-        remaining_times: list[int] = []
-
-        for profile in enabled_profiles:
-            if profile.last_scan is None:
-                return 1
-
-            try:
-                last_scan = datetime.fromisoformat(profile.last_scan)
-            except ValueError:
-                return 1
-
-            elapsed = (now - last_scan).total_seconds()
-            remaining = max(1, int(profile.interval - elapsed))
-            remaining_times.append(remaining)
-
-        return min(remaining_times)
+    def _wait(self) -> None:
+        seconds = self.config.check_interval
+        self.logger.info("Waiting %s seconds", seconds)
+        self.notifier.print_status("Waiting", [f"{seconds} seconds"])
+        time.sleep(seconds)
 
     def _get_logger(self) -> logging.Logger:
         logger = logging.getLogger(LOG_NAME)
