@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environment
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Database
+data/*.db
+
+# Logs
+logs/
+
+# Cache
+cache/
+
+# Temporary
+*.log
+*.tmp
+
+# System
+.DS_Store
+Thumbs.db
+
+# Cookies и секреты
+cookies.json
+settings/local.json

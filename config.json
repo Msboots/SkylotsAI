@@ -1,0 +1,6 @@
+{
+    "search_url": "",
+    "max_price": 10,
+    "check_interval": 60,
+    "notify_new_only": true
+}

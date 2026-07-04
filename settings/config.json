@@ -1,0 +1,7 @@
+{
+    "check_interval": 60,
+    "max_price": 20,
+    "max_minutes": 15,
+    "telegram": false,
+    "sound": true
+}
