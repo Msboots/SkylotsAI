@@ -89,6 +89,9 @@ class Notifier(Protocol):
     def print_new_lot(self, lot: Lot) -> None:
         ...
 
+    def update_ending_lots(self, profile_name: str, lots: Sequence[Lot]) -> None:
+        ...
+
 
 @dataclass
 class ProfileScanSummary:
@@ -178,8 +181,11 @@ class Monitor:
 
         html = self.parser.fetch(profile.url)
         lots = self.parser.parse(html)
+        for lot in lots:
+            lot.profile_name = profile.name
         self.notifier.set_system_status("Internet", bool(html))
         self.notifier.set_system_status("Parser", bool(lots) or not html)
+        self.notifier.update_ending_lots(profile.name, lots)
         summary = ProfileScanSummary(
             profile_id=profile.id,
             profile_name=profile.name,

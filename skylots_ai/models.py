@@ -35,6 +35,9 @@ class Lot:
     city: str | None = None
     rating: float | None = None
     end_time: str | None = None
+    remaining_time_text: str | None = None
+    bids_count: int | None = None
+    profile_name: str | None = None
     first_seen: str | None = None
     last_seen: str | None = None
 

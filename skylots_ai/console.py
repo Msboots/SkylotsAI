@@ -43,12 +43,24 @@ class ConsoleLotState:
     url: str
 
 
+@dataclass
+class ConsoleEndingLotState:
+    profile_id: str
+    profile_name: str
+    title: str
+    price: int
+    seller: str
+    remaining_time: str
+    bids: str
+
+
 class ConsoleNotifier:
     """
     Rich dashboard для долгого мониторинга в терминале.
     """
 
     MAX_LOTS = 10
+    MAX_ENDING_LOTS = 10
     MAX_EVENTS = 5
 
     def __init__(self, live_enabled: bool = True) -> None:
@@ -61,6 +73,7 @@ class ConsoleNotifier:
         self.database_lots_count = 0
         self.profiles: dict[str, ConsoleProfileState] = {}
         self.latest_lots: list[ConsoleLotState] = []
+        self.ending_lots: dict[str, list[ConsoleEndingLotState]] = {}
         self.events: list[str] = []
         self.monitor_mode = "multi"
         self.active_profile_id = ""
@@ -162,6 +175,12 @@ class ConsoleNotifier:
                 new_lots=current.new_lots if current else 0,
                 last_scan=current.last_scan if current else "-",
             )
+        known_profile_ids = {profile.id for profile in profiles}
+        self.ending_lots = {
+            profile_id: lots
+            for profile_id, lots in self.ending_lots.items()
+            if profile_id in known_profile_ids
+        }
         self.refresh()
 
     def resume(self) -> None:
@@ -259,6 +278,7 @@ class ConsoleNotifier:
         self.refresh()
 
     def print_new_lot(self, lot: Lot) -> None:
+        bids = "-" if lot.bids_count is None else str(lot.bids_count)
         self.latest_lots.insert(
             0,
             ConsoleLotState(
@@ -267,14 +287,40 @@ class ConsoleNotifier:
                 title=lot.title or "-",
                 price=lot.price,
                 seller=lot.seller or "-",
-                remaining_time=lot.end_time or "-",
-                bids="-",
+                remaining_time=lot.remaining_time_text or lot.end_time or "-",
+                bids=bids,
                 url=lot.url or "-",
             ),
         )
         self.latest_lots = self.latest_lots[:self.MAX_LOTS]
         self.latest_lots.sort(key=self._lot_sort_key)
         self.add_event(f"Новый лот: {lot.title}")
+        self.refresh()
+
+    def update_ending_lots(self, profile_name: str, lots: Sequence[Lot]) -> None:
+        profile = self._find_profile_state(profile_name)
+        if profile is None:
+            return
+
+        ending_lots: list[ConsoleEndingLotState] = []
+        for lot in lots:
+            bids = "-" if lot.bids_count is None else str(lot.bids_count)
+            ending_lots.append(
+                ConsoleEndingLotState(
+                    profile_id=profile.profile_id,
+                    profile_name=profile.name,
+                    title=lot.title or "-",
+                    price=lot.price,
+                    seller=lot.seller or "-",
+                    remaining_time=lot.remaining_time_text or lot.end_time or "-",
+                    bids=bids,
+                ),
+            )
+
+        self.ending_lots[profile.profile_id] = sorted(
+            ending_lots,
+            key=self._ending_lot_sort_key,
+        )[:self.MAX_ENDING_LOTS]
         self.refresh()
 
     def print_status(
@@ -331,6 +377,7 @@ class ConsoleNotifier:
                 self._system_status_line(),
                 self._header_table(),
                 self._lots_table(),
+                self._ending_lots_table(),
                 self._profiles_table(),
                 self._stats_line(),
                 self._events_panel(),
@@ -446,6 +493,36 @@ class ConsoleNotifier:
             )
 
         return Panel(table, title="НОВЫЕ ЛОТЫ", border_style="green")
+
+    def _ending_lots_table(self) -> Panel:
+        table = Table(expand=True, padding=(0, 1), box=None)
+        table.add_column("Осталось", style="bold", no_wrap=True)
+        table.add_column("Цена", justify="right", style="cyan", no_wrap=True)
+        table.add_column("Ставок", justify="right")
+        table.add_column("Название", overflow="ellipsis", no_wrap=True)
+        table.add_column("Продавец", overflow="ellipsis", no_wrap=True)
+        table.add_column("Профиль", overflow="ellipsis", no_wrap=True)
+
+        ending_lots = self._visible_ending_lots()
+        if not ending_lots:
+            table.add_row("-", "-", "-", "Лотов нет", "-", "-")
+
+        for lot in ending_lots:
+            remaining_style = self._ending_remaining_style(lot.remaining_time)
+            table.add_row(
+                Text(self._short_remaining(lot.remaining_time), style=remaining_style),
+                str(lot.price),
+                lot.bids,
+                self._trim(lot.title, 34),
+                self._trim(lot.seller, 14),
+                self._trim(lot.profile_name, 14),
+            )
+
+        return Panel(
+            table,
+            title="ЛОТЫ СКОРО ЗАКАНЧИВАЮТСЯ",
+            border_style="red",
+        )
 
     def _stats_line(self) -> Panel:
         stats = Text()
@@ -582,13 +659,22 @@ class ConsoleNotifier:
 
     @staticmethod
     def _remaining_style(value: str) -> str:
-        minutes = ConsoleNotifier._extract_minutes(value)
-        if minutes is None or minutes > 10:
+        seconds = ConsoleNotifier.parse_remaining_seconds(value)
+        if seconds is None or seconds > 600:
             return "green"
-        if minutes >= 5:
+        if seconds >= 300:
             return "yellow"
-        if minutes >= 2:
+        if seconds >= 120:
             return "orange1"
+        return "red"
+
+    @staticmethod
+    def _ending_remaining_style(value: str) -> str:
+        seconds = ConsoleNotifier.parse_remaining_seconds(value)
+        if seconds is None or seconds > 600:
+            return "green"
+        if seconds >= 120:
+            return "yellow"
         return "red"
 
     @staticmethod
@@ -617,10 +703,39 @@ class ConsoleNotifier:
         return minutes, lot.time
 
     @staticmethod
+    def _ending_lot_sort_key(lot: ConsoleEndingLotState) -> tuple[int, str]:
+        seconds = ConsoleNotifier.parse_remaining_seconds(lot.remaining_time)
+        if seconds is None:
+            seconds = 10_000_000
+        return seconds, lot.title
+
+    def _visible_ending_lots(self) -> list[ConsoleEndingLotState]:
+        visible_profile_ids = self._visible_profile_ids()
+        lots: list[ConsoleEndingLotState] = []
+        for profile_id in visible_profile_ids:
+            lots.extend(self.ending_lots.get(profile_id, []))
+
+        return sorted(lots, key=self._ending_lot_sort_key)[:self.MAX_ENDING_LOTS]
+
+    def _visible_profile_ids(self) -> list[str]:
+        if self.monitor_mode == "single":
+            profile = self.profiles.get(self.active_profile_id)
+            if profile is None or not profile.enabled:
+                return []
+            return [profile.profile_id]
+
+        return [
+            profile.profile_id
+            for profile in self.profiles.values()
+            if profile.enabled
+        ]
+
+    @staticmethod
     def _short_remaining(value: str) -> str:
-        minutes = ConsoleNotifier._extract_minutes(value)
-        if minutes is None:
+        seconds = ConsoleNotifier.parse_remaining_seconds(value)
+        if seconds is None:
             return ConsoleNotifier._trim(value, 14)
+        minutes = seconds // 60
         if minutes >= 60:
             hours = minutes // 60
             rest = minutes % 60
@@ -628,6 +743,33 @@ class ConsoleNotifier:
                 return f"{hours} ч {rest} мин"
             return f"{hours} ч"
         return f"{minutes} мин"
+
+    @staticmethod
+    def parse_remaining_seconds(value: str) -> int | None:
+        normalized = value.lower()
+        hours_match = re.search(r"(\d+)\s*(?:ч|h)", normalized)
+        minutes_match = re.search(r"(\d+)\s*(?:мин|min|m)", normalized)
+        seconds_match = re.search(r"(\d+)\s*(?:сек|sec|s)", normalized)
+        clock_match = re.search(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", normalized)
+
+        if clock_match:
+            first = int(clock_match.group(1))
+            second = int(clock_match.group(2))
+            third = clock_match.group(3)
+            if third is not None:
+                return first * 3600 + second * 60 + int(third)
+            return first * 60 + second
+
+        seconds = 0
+        if hours_match:
+            seconds += int(hours_match.group(1)) * 3600
+        if minutes_match:
+            seconds += int(minutes_match.group(1)) * 60
+        if seconds_match:
+            seconds += int(seconds_match.group(1))
+        if hours_match or minutes_match or seconds_match:
+            return seconds
+        return None
 
     @staticmethod
     def _trim(value: str, limit: int) -> str:

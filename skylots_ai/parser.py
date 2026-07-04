@@ -91,6 +91,18 @@ class Parser:
         city = text.strip()
         return city or None
 
+    @staticmethod
+    def parse_bids(text: str) -> int | None:
+        normalized = text.lower()
+        if "став" not in normalized and "bid" not in normalized:
+            return None
+
+        match = re.search(r"\d+", normalized)
+        if not match:
+            return None
+
+        return int(match.group())
+
     def _create_session(self) -> requests.Session:
         session = requests.Session()
         session.headers.update(
@@ -146,6 +158,9 @@ class Parser:
 
         end_el = element.select_one(".search_lot_timetoend")
         end_time = end_el.get_text(" ", strip=True) if end_el else None
+        bids_el = element.select_one(".search_lot_boughts")
+        bids_text = bids_el.get_text(" ", strip=True) if bids_el else ""
+        bids_count = self.parse_bids(bids_text)
 
         return Lot(
             id=lot_id,
@@ -156,6 +171,8 @@ class Parser:
             city=city,
             rating=rating,
             end_time=end_time,
+            remaining_time_text=end_time,
+            bids_count=bids_count,
         )
 
     @staticmethod
