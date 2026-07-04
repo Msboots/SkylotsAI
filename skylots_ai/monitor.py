@@ -73,7 +73,7 @@ class Monitor:
         self.logger.info("Enabled profiles: %s", profiles_count)
         self.notifier.print_status(
             "Skylots AI Assistant",
-            ["Started", f"Profiles: {profiles_count}"],
+            [f"Profiles: {profiles_count}"],
         )
 
         try:
@@ -82,7 +82,7 @@ class Monitor:
                 self._wait()
         except KeyboardInterrupt:
             self.logger.info("Skylots AI Assistant stopped by user")
-            self.notifier.print_status("Stopped")
+            self.notifier.print_status("Stopping...", ["Good bye."])
 
     def single_run(self) -> list[ProfileScanSummary]:
         summaries: list[ProfileScanSummary] = []
@@ -139,7 +139,7 @@ class Monitor:
     def _wait(self) -> None:
         seconds = self.config.check_interval
         self.logger.info("Waiting %s seconds", seconds)
-        self.notifier.print_status("Waiting", [f"{seconds} seconds"])
+        self.notifier.print_status("Waiting", [f"{seconds} sec"])
         time.sleep(seconds)
 
     def _get_logger(self) -> logging.Logger:

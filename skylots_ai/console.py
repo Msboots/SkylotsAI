@@ -30,18 +30,22 @@ class ConsoleNotifier:
         fetched: int,
         new_lots: int,
     ) -> None:
-        self._print_separator("=")
-        print("Profile")
+        self._print_separator("-")
+        print("Scanning:")
         print()
         print(profile_name)
         print()
-        print("Fetched")
+        print("Fetched:")
         print()
         print(fetched)
         print()
-        print("New")
+        print("New:")
         print()
         print(new_lots)
+
+        if new_lots == 0:
+            print()
+            print("No new lots.")
 
     def print_new_lot(self, lot: Lot) -> None:
         self._print_separator("-")
