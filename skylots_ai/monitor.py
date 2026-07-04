@@ -53,6 +53,7 @@ class Notifier(Protocol):
         profiles: Sequence[SearchProfile],
         monitor_mode: str = "multi",
         active_profile_id: str = "",
+        profile_max_prices: dict[str, int] | None = None,
     ) -> None:
         ...
 
@@ -90,6 +91,12 @@ class Notifier(Protocol):
         ...
 
     def update_ending_lots(self, profile_name: str, lots: Sequence[Lot]) -> None:
+        ...
+
+    def select_hot_lot(self, step: int) -> None:
+        ...
+
+    def open_selected_hot_lot(self) -> None:
         ...
 
 
@@ -289,6 +296,15 @@ class Monitor:
             self.notifier.show_profile_list(self.profile_manager.get_all())
             self.notifier.resume()
             return "wait"
+        if normalized == "up":
+            self.notifier.select_hot_lot(-1)
+            return "wait"
+        if normalized == "down":
+            self.notifier.select_hot_lot(1)
+            return "wait"
+        if normalized == "enter":
+            self.notifier.open_selected_hot_lot()
+            return "wait"
         if normalized == "q":
             self.logger.info("Skylots AI Assistant stopped by hotkey")
             self.notifier.print_status(
@@ -340,6 +356,10 @@ class Monitor:
             self.profile_manager.get_all(),
             monitor_mode=self.monitor_mode,
             active_profile_id=self.active_profile_id,
+            profile_max_prices={
+                profile.id: self.config.max_price
+                for profile in self.profile_manager.get_all()
+            },
         )
 
     def _profiles_to_scan(self) -> list[SearchProfile]:
@@ -508,7 +528,21 @@ class Monitor:
         if not readable:
             return ""
 
-        return sys.stdin.read(1)
+        key = sys.stdin.read(1)
+        if key in {"\n", "\r"}:
+            return "enter"
+        if key != "\x1b":
+            return key
+
+        sequence = ""
+        while select.select([sys.stdin], [], [], 0.01)[0]:
+            sequence += sys.stdin.read(1)
+
+        if sequence == "[A":
+            return "up"
+        if sequence == "[B":
+            return "down"
+        return ""
 
     def _get_logger(self) -> logging.Logger:
         logger = logging.getLogger(LOG_NAME)

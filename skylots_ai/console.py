@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 import re
+import webbrowser
 
 from rich.align import Align
 from rich.console import Console, Group
@@ -25,6 +26,7 @@ class ConsoleProfileState:
     url: str = "-"
     enabled: bool = True
     interval: int = 30
+    max_price: int = 20
     status: str = "ОЖИДАНИЕ"
     fetched: int = 0
     new_lots: int = 0
@@ -45,6 +47,7 @@ class ConsoleLotState:
 
 @dataclass
 class ConsoleEndingLotState:
+    lot_id: str
     profile_id: str
     profile_name: str
     title: str
@@ -52,6 +55,7 @@ class ConsoleEndingLotState:
     seller: str
     remaining_time: str
     bids: str
+    url: str
 
 
 class ConsoleNotifier:
@@ -74,6 +78,7 @@ class ConsoleNotifier:
         self.profiles: dict[str, ConsoleProfileState] = {}
         self.latest_lots: list[ConsoleLotState] = []
         self.ending_lots: dict[str, list[ConsoleEndingLotState]] = {}
+        self.selected_hot_index = 0
         self.events: list[str] = []
         self.monitor_mode = "multi"
         self.active_profile_id = ""
@@ -156,6 +161,7 @@ class ConsoleNotifier:
         profiles: Sequence[SearchProfile],
         monitor_mode: str = "multi",
         active_profile_id: str = "",
+        profile_max_prices: dict[str, int] | None = None,
     ) -> None:
         existing = self.profiles
         self.monitor_mode = monitor_mode
@@ -170,6 +176,7 @@ class ConsoleNotifier:
                 url=profile.url,
                 enabled=profile.enabled,
                 interval=profile.interval,
+                max_price=(profile_max_prices or {}).get(profile.id, 20),
                 status=current.status if current else "ОЖИДАНИЕ",
                 fetched=current.fetched if current else 0,
                 new_lots=current.new_lots if current else 0,
@@ -182,6 +189,32 @@ class ConsoleNotifier:
             if profile_id in known_profile_ids
         }
         self.refresh()
+
+    def select_hot_lot(self, step: int) -> None:
+        hot_lots = self._hot_lots()
+        if not hot_lots:
+            self.selected_hot_index = 0
+            self.refresh()
+            return
+
+        self.selected_hot_index = (
+            self.selected_hot_index + step
+        ) % len(hot_lots)
+        self.refresh()
+
+    def open_selected_hot_lot(self) -> None:
+        hot_lots = self._hot_lots()
+        if not hot_lots:
+            self.add_event("HOT LOTS пуст")
+            return
+
+        selected_lot = hot_lots[self.selected_hot_index]
+        if not selected_lot.url or selected_lot.url == "-":
+            self.add_event("У выбранного лота нет ссылки")
+            return
+
+        webbrowser.open(selected_lot.url)
+        self.add_event(f"Открыт лот: {selected_lot.lot_id}")
 
     def resume(self) -> None:
         if self.live_enabled and self.live is None:
@@ -307,6 +340,7 @@ class ConsoleNotifier:
             bids = "-" if lot.bids_count is None else str(lot.bids_count)
             ending_lots.append(
                 ConsoleEndingLotState(
+                    lot_id=lot.id,
                     profile_id=profile.profile_id,
                     profile_name=profile.name,
                     title=lot.title or "-",
@@ -314,13 +348,14 @@ class ConsoleNotifier:
                     seller=lot.seller or "-",
                     remaining_time=lot.remaining_time_text or lot.end_time or "-",
                     bids=bids,
+                    url=lot.url or "-",
                 ),
             )
 
         self.ending_lots[profile.profile_id] = sorted(
             ending_lots,
             key=self._ending_lot_sort_key,
-        )[:self.MAX_ENDING_LOTS]
+        )
         self.refresh()
 
     def print_status(
@@ -374,16 +409,17 @@ class ConsoleNotifier:
     def render(self) -> Panel:
         return Panel(
             Group(
-                self._system_status_line(),
-                self._header_table(),
-                self._lots_table(),
+                self._hot_lots_table(),
                 self._ending_lots_table(),
                 self._profiles_table(),
                 self._stats_line(),
                 self._events_panel(),
                 self._status_bar(),
             ),
-            title="[bold cyan]Skylots AI Assistant[/]",
+            title=(
+                "[bold cyan]Skylots AI Assistant[/] "
+                "[bold]Auction Workstation[/]"
+            ),
             border_style="bright_blue",
         )
 
@@ -429,6 +465,7 @@ class ConsoleNotifier:
 
     def _profiles_table(self) -> Panel:
         lines = [
+            f"Режим: {self._mode_label()} | Активный профиль: {self._active_profile_name()}",
             (
                 f"{'':<1} "
                 f"{'Вкл':<3} "
@@ -494,6 +531,42 @@ class ConsoleNotifier:
 
         return Panel(table, title="НОВЫЕ ЛОТЫ", border_style="green")
 
+    def _hot_lots_table(self) -> Panel:
+        table = Table(expand=True, padding=(0, 1), box=None)
+        table.add_column("ID", style="cyan", no_wrap=True)
+        table.add_column("Осталось", style="bold", no_wrap=True)
+        table.add_column("Цена", justify="right", no_wrap=True)
+        table.add_column("Ставок", justify="right")
+        table.add_column("Название", overflow="ellipsis", no_wrap=True)
+        table.add_column("Продавец", overflow="ellipsis", no_wrap=True)
+        table.add_column("Профиль", overflow="ellipsis", no_wrap=True)
+
+        hot_lots = self._hot_lots()
+        if self.selected_hot_index >= len(hot_lots):
+            self.selected_hot_index = 0
+
+        if not hot_lots:
+            table.add_row("-", "-", "-", "-", "Подходящих лотов нет", "-", "-")
+
+        for index, lot in enumerate(hot_lots):
+            selected = index == self.selected_hot_index
+            row_style = "reverse" if selected else None
+            table.add_row(
+                lot.lot_id,
+                Text(
+                    self._short_remaining(lot.remaining_time),
+                    style=self._ending_remaining_style(lot.remaining_time),
+                ),
+                self._price_text(lot.price),
+                self._bids_text(lot.bids),
+                self._trim(lot.title, 34),
+                self._trim(lot.seller, 14),
+                self._trim(lot.profile_name, 14),
+                style=row_style,
+            )
+
+        return Panel(table, title="🔥 HOT LOTS", border_style="red")
+
     def _ending_lots_table(self) -> Panel:
         table = Table(expand=True, padding=(0, 1), box=None)
         table.add_column("Осталось", style="bold", no_wrap=True)
@@ -511,8 +584,8 @@ class ConsoleNotifier:
             remaining_style = self._ending_remaining_style(lot.remaining_time)
             table.add_row(
                 Text(self._short_remaining(lot.remaining_time), style=remaining_style),
-                str(lot.price),
-                lot.bids,
+                self._price_text(lot.price),
+                self._bids_text(lot.bids),
                 self._trim(lot.title, 34),
                 self._trim(lot.seller, 14),
                 self._trim(lot.profile_name, 14),
@@ -520,8 +593,8 @@ class ConsoleNotifier:
 
         return Panel(
             table,
-            title="ЛОТЫ СКОРО ЗАКАНЧИВАЮТСЯ",
-            border_style="red",
+            title="⏳ ENDING SOON",
+            border_style="yellow",
         )
 
     def _stats_line(self) -> Panel:
@@ -530,11 +603,9 @@ class ConsoleNotifier:
         stats.append("  |  ")
         stats.append(f"Нов {self.total_new_lots}", style="green")
         stats.append("  |  ")
-        stats.append(f"Изв {self.total_existing_lots}", style="yellow")
+        stats.append(f"База {self.database_lots_count}", style="cyan")
         stats.append("  |  ")
-        stats.append(f"Нов/д {self.new_today}", style="green")
-        stats.append("  |  ")
-        stats.append(f"Всего/д {self.total_today}", style="cyan")
+        stats.append(f"Сегодня {self.new_today}", style="green")
         return Panel(
             Align.center(stats),
             title="СТАТИСТИКА",
@@ -545,7 +616,7 @@ class ConsoleNotifier:
         if not self.events:
             content = Text("Событий пока нет", style="dim")
         else:
-            content = Text("\n".join(self.events[-self.MAX_EVENTS:]))
+            content = Text("\n".join(self.events[:self.MAX_EVENTS]))
         return Panel(
             content,
             title="ПОСЛЕДНИЕ СОБЫТИЯ",
@@ -556,15 +627,16 @@ class ConsoleNotifier:
         text = (
             f"[bold]{self.status}[/] | "
             f"[cyan]{self.countdown} сек[/] | "
-            "A добавить | E вкл/выкл | M режим | "
-            "N/P профиль | I инт. | R обновить | S скан | Q"
+            "↑/↓ HOT | ENTER открыть | A профиль | E вкл/выкл | "
+            "M режим | N/P профиль | I инт. | S скан | R обновить | "
+            "L список | Q"
         )
         return Panel(text, border_style=self._status_style(self.status))
 
     def add_event(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.events.append(f"[{timestamp}] {message}")
-        self.events = self.events[-self.MAX_EVENTS:]
+        self.events.insert(0, f"[{timestamp}] {message}")
+        self.events = self.events[:self.MAX_EVENTS]
 
     def _set_profiles_status(self, status: str) -> None:
         for profile in self.profiles.values():
@@ -709,13 +781,37 @@ class ConsoleNotifier:
             seconds = 10_000_000
         return seconds, lot.title
 
-    def _visible_ending_lots(self) -> list[ConsoleEndingLotState]:
+    def _hot_lots(self) -> list[ConsoleEndingLotState]:
+        hot_lots = []
+        for lot in self._visible_ending_lots(limit=None):
+            profile = self.profiles.get(lot.profile_id)
+            if profile is None:
+                continue
+            if lot.price <= profile.max_price:
+                hot_lots.append(lot)
+
+        return sorted(hot_lots, key=self._hot_lot_sort_key)[:self.MAX_LOTS]
+
+    @staticmethod
+    def _hot_lot_sort_key(lot: ConsoleEndingLotState) -> tuple[int, int, str]:
+        seconds = ConsoleNotifier.parse_remaining_seconds(lot.remaining_time)
+        if seconds is None:
+            seconds = 10_000_000
+        return seconds, lot.price, lot.title
+
+    def _visible_ending_lots(
+        self,
+        limit: int | None = MAX_ENDING_LOTS,
+    ) -> list[ConsoleEndingLotState]:
         visible_profile_ids = self._visible_profile_ids()
         lots: list[ConsoleEndingLotState] = []
         for profile_id in visible_profile_ids:
             lots.extend(self.ending_lots.get(profile_id, []))
 
-        return sorted(lots, key=self._ending_lot_sort_key)[:self.MAX_ENDING_LOTS]
+        sorted_lots = sorted(lots, key=self._ending_lot_sort_key)
+        if limit is None:
+            return sorted_lots
+        return sorted_lots[:limit]
 
     def _visible_profile_ids(self) -> list[str]:
         if self.monitor_mode == "single":
@@ -735,14 +831,34 @@ class ConsoleNotifier:
         seconds = ConsoleNotifier.parse_remaining_seconds(value)
         if seconds is None:
             return ConsoleNotifier._trim(value, 14)
+        if seconds < 60:
+            return f"{seconds}с"
         minutes = seconds // 60
+        rest_seconds = seconds % 60
         if minutes >= 60:
             hours = minutes // 60
             rest = minutes % 60
             if rest:
-                return f"{hours} ч {rest} мин"
-            return f"{hours} ч"
-        return f"{minutes} мин"
+                return f"{hours}ч{rest}м"
+            return f"{hours}ч"
+        if minutes < 10 and rest_seconds:
+            return f"{minutes}м{rest_seconds}с"
+        return f"{minutes}м"
+
+    @staticmethod
+    def _price_text(price: int) -> Text:
+        value = f"{price} грн"
+        if price <= 10:
+            return Text(value, style="bright_green")
+        if price <= 50:
+            return Text(value, style="yellow")
+        return Text(value)
+
+    @staticmethod
+    def _bids_text(bids: str) -> Text:
+        if bids == "0":
+            return Text(bids, style="bright_green")
+        return Text(bids)
 
     @staticmethod
     def parse_remaining_seconds(value: str) -> int | None:
