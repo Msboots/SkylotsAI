@@ -15,6 +15,7 @@ from rich.table import Table
 from rich.text import Text
 
 from skylots_ai.models import Lot
+from skylots_ai.profiles import SearchProfile
 
 
 @dataclass
@@ -130,6 +131,71 @@ class ConsoleNotifier:
     def set_system_status(self, name: str, ok: bool) -> None:
         self.system_statuses[name] = ok
         self.refresh()
+
+    def set_profiles(self, profiles: Sequence[SearchProfile]) -> None:
+        existing = self.profiles
+        self.profiles_loaded = len(profiles)
+        self.profiles = {}
+        for profile in profiles:
+            current = existing.get(profile.name)
+            self.profiles[profile.name] = ConsoleProfileState(
+                name=profile.name,
+                url=profile.url,
+                status=current.status if current else "ОЖИДАНИЕ",
+                fetched=current.fetched if current else 0,
+                new_lots=current.new_lots if current else 0,
+                last_scan=current.last_scan if current else "-",
+            )
+        self.refresh()
+
+    def resume(self) -> None:
+        if self.live_enabled and self.live is None:
+            self.live = Live(
+                self.render(),
+                console=self.console,
+                refresh_per_second=1,
+                screen=True,
+            )
+            self.live.start()
+        self.refresh()
+
+    def prompt_new_profile(self, default_interval: int = 30) -> tuple[str, str, int]:
+        self.stop()
+        self.console.print("[bold cyan]Добавление профиля[/]")
+        name = input("Введите название профиля: ").strip()
+        url = input("Вставьте ссылку Skylots: ").strip()
+        interval_text = input(
+            f"Интервал проверки, сек [{default_interval}]: ",
+        ).strip()
+
+        interval = default_interval
+        if interval_text:
+            try:
+                interval = int(interval_text)
+            except ValueError:
+                interval = default_interval
+
+        return name, url, interval
+
+    def show_profile_list(self, profiles: Sequence[SearchProfile]) -> None:
+        self.stop()
+        table = Table(title="Список профилей", box=None)
+        table.add_column("Статус")
+        table.add_column("Название")
+        table.add_column("Интервал", justify="right")
+        table.add_column("URL")
+
+        for profile in profiles:
+            status = "Включён" if profile.enabled else "Выключен"
+            table.add_row(
+                status,
+                profile.name,
+                str(profile.interval),
+                profile.url,
+            )
+
+        self.console.print(table)
+        input("Нажмите Enter, чтобы вернуться к dashboard...")
 
     def print_summary(
         self,
@@ -368,7 +434,7 @@ class ConsoleNotifier:
         text = (
             f"[bold]{self.status}[/] | "
             f"[cyan]{self.countdown} сек[/] | "
-            "S скан | R профили | L список | Q/CTRL+C"
+            "A добавить | R обновить | L список | Q/CTRL+C"
         )
         return Panel(text, border_style=self._status_style(self.status))
 

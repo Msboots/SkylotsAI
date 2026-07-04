@@ -6,7 +6,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
+import select
+import sys
+import termios
 import time
+import tty
 from typing import Protocol
 
 from skylots_ai.config import Config
@@ -42,6 +46,21 @@ class Notifier(Protocol):
         ...
 
     def set_system_status(self, name: str, ok: bool) -> None:
+        ...
+
+    def set_profiles(self, profiles: Sequence[SearchProfile]) -> None:
+        ...
+
+    def resume(self) -> None:
+        ...
+
+    def prompt_new_profile(self, default_interval: int = 30) -> tuple[str, str, int]:
+        ...
+
+    def show_profile_list(self, profiles: Sequence[SearchProfile]) -> None:
+        ...
+
+    def add_event(self, message: str) -> None:
         ...
 
     def print_status(
@@ -112,13 +131,15 @@ class Monitor:
             while True:
                 try:
                     self.single_run()
-                    self._wait()
+                    if not self._wait():
+                        break
                 except Exception as exc:
                     self.logger.exception("Monitoring loop error: %s", exc)
                     self.notifier.set_status(
                         "ОШИБКА. Подробности в logs/skylots.log.",
                     )
-                    self._wait()
+                    if not self._wait():
+                        break
         except KeyboardInterrupt:
             self.logger.info("Skylots AI Assistant stopped by user")
             self.notifier.print_status(
@@ -186,15 +207,127 @@ class Monitor:
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def _wait(self) -> None:
+    def _wait(self) -> bool:
         seconds = self.config.check_interval
         self.logger.info("Waiting %s seconds", seconds)
+        terminal_settings = self._enable_hotkeys()
 
-        for remaining in range(seconds, 0, -1):
-            self.notifier.set_countdown(remaining)
-            time.sleep(1)
+        try:
+            for remaining in range(seconds, 0, -1):
+                self.notifier.set_countdown(remaining)
+                key = self._read_hotkey(1.0)
+                if not key:
+                    continue
+
+                self._restore_terminal(terminal_settings)
+                terminal_settings = None
+                should_continue = self._handle_hotkey(key)
+                if not should_continue:
+                    return False
+
+                terminal_settings = self._enable_hotkeys()
+        finally:
+            self._restore_terminal(terminal_settings)
 
         self.notifier.set_countdown(0)
+        return True
+
+    def _handle_hotkey(self, key: str) -> bool:
+        normalized = key.lower()
+
+        if normalized == "a":
+            self._add_profile_from_dashboard()
+            return True
+        if normalized == "r":
+            self._reload_profiles()
+            return True
+        if normalized == "l":
+            self.notifier.show_profile_list(self.profile_manager.get_all())
+            self.notifier.resume()
+            return True
+        if normalized == "q":
+            self.logger.info("Skylots AI Assistant stopped by hotkey")
+            self.notifier.print_status(
+                "Остановка...",
+                ["До свидания."],
+            )
+            return False
+
+        return True
+
+    def _add_profile_from_dashboard(self) -> None:
+        name, url, interval = self.notifier.prompt_new_profile(
+            default_interval=30,
+        )
+
+        error = self._validate_profile_input(name, url)
+        if error is not None:
+            self.notifier.add_event(error)
+            self.notifier.resume()
+            return
+
+        safe_interval = interval if interval > 0 else 30
+        profile = self.profile_manager.add_profile(
+            name=name,
+            url=url,
+            interval=safe_interval,
+        )
+        self.logger.info("Profile added from dashboard: %s", profile.name)
+        self.notifier.add_event(f"Профиль добавлен: {profile.name}")
+        self._sync_profiles_to_dashboard()
+        self.notifier.set_system_status(
+            "Profiles",
+            bool(self.profile_manager.get_enabled()),
+        )
+        self.notifier.resume()
+
+    def _reload_profiles(self) -> None:
+        self.profile_manager.load()
+        self._sync_profiles_to_dashboard()
+        self.notifier.set_system_status(
+            "Profiles",
+            bool(self.profile_manager.get_enabled()),
+        )
+        self.notifier.add_event("Профили обновлены")
+
+    def _sync_profiles_to_dashboard(self) -> None:
+        self.notifier.set_profiles(self.profile_manager.get_enabled())
+
+    @staticmethod
+    def _validate_profile_input(name: str, url: str) -> str | None:
+        if not name.strip():
+            return "Ошибка: пустое название профиля"
+        if not url.startswith("https://"):
+            return "Ошибка: нужен URL с https://"
+        if "skylots.org" not in url:
+            return "Ошибка: нужен URL skylots.org"
+        return None
+
+    @staticmethod
+    def _enable_hotkeys() -> list[int | bytes] | None:
+        if not sys.stdin.isatty():
+            return None
+
+        settings = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin)
+        return settings
+
+    @staticmethod
+    def _restore_terminal(settings: list[int | bytes] | None) -> None:
+        if settings is not None and sys.stdin.isatty():
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, settings)
+
+    @staticmethod
+    def _read_hotkey(timeout: float) -> str:
+        if not sys.stdin.isatty():
+            time.sleep(timeout)
+            return ""
+
+        readable, _, _ = select.select([sys.stdin], [], [], timeout)
+        if not readable:
+            return ""
+
+        return sys.stdin.read(1)
 
     def _get_logger(self) -> logging.Logger:
         logger = logging.getLogger(LOG_NAME)
