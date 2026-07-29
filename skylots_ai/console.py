@@ -66,7 +66,8 @@ class ConsoleNotifier:
     MAX_LOTS = 10
     MAX_ENDING_LOTS = 10
     MAX_EVENTS = 5
-    PANELS = ("lots", "profiles", "events")
+    LOT_PANELS = ("hot_lots", "ending_lots")
+    PANELS = (*LOT_PANELS, "profiles", "events")
 
     def __init__(self, live_enabled: bool = True) -> None:
         self.console = Console()
@@ -79,7 +80,7 @@ class ConsoleNotifier:
         self.profiles: dict[str, ConsoleProfileState] = {}
         self.latest_lots: list[ConsoleLotState] = []
         self.ending_lots: dict[str, list[ConsoleEndingLotState]] = {}
-        self.active_panel = "lots"
+        self.active_panel = "hot_lots"
         self.selected_lot_index = 0
         self.selected_event_index = 0
         self.events: list[str] = []
@@ -196,15 +197,21 @@ class ConsoleNotifier:
         self.refresh()
 
     def select_next_panel(self) -> None:
+        self._select_relative_panel(1)
+
+    def select_previous_panel(self) -> None:
+        self._select_relative_panel(-1)
+
+    def _select_relative_panel(self, step: int) -> None:
         current_index = self.PANELS.index(self.active_panel)
         self.active_panel = self.PANELS[
-            (current_index + 1) % len(self.PANELS)
+            (current_index + step) % len(self.PANELS)
         ]
         self._clamp_selection()
         self.refresh()
 
     def select_active_row(self, step: int) -> None:
-        if self.active_panel == "lots":
+        if self.active_panel in self.LOT_PANELS:
             lots = self._selectable_lots()
             if not lots:
                 self.selected_lot_index = 0
@@ -227,7 +234,7 @@ class ConsoleNotifier:
         self.refresh()
 
     def select_hot_lot(self, step: int) -> None:
-        self.active_panel = "lots"
+        self.active_panel = "hot_lots"
         self.select_active_row(step)
 
     def open_selected_hot_lot(self) -> None:
@@ -245,6 +252,8 @@ class ConsoleNotifier:
         self.refresh()
 
     def selected_lot(self) -> ConsoleEndingLotState | None:
+        if self.active_panel not in self.LOT_PANELS:
+            return None
         lots = self._selectable_lots()
         if not lots:
             return None
@@ -645,8 +654,7 @@ class ConsoleNotifier:
 
         for index, lot in enumerate(hot_lots):
             selected = (
-                self.active_panel == "lots"
-                and self._selectable_lots() == hot_lots
+                self.active_panel == "hot_lots"
                 and index == self.selected_lot_index
             )
             row_style = "reverse" if selected else None
@@ -666,7 +674,7 @@ class ConsoleNotifier:
 
         return Panel(
             table,
-            title=self._panel_title("lots", "🔥 HOT LOTS"),
+            title=self._panel_title("hot_lots", "🔥 HOT LOTS"),
             border_style="red",
         )
 
@@ -683,12 +691,10 @@ class ConsoleNotifier:
         if not ending_lots:
             table.add_row("-", "-", "-", "Лотов нет", "-", "-")
 
-        selectable_lots = self._selectable_lots()
         for index, lot in enumerate(ending_lots):
             remaining_style = self._ending_remaining_style(lot.remaining_time)
             selected = (
-                self.active_panel == "lots"
-                and selectable_lots == ending_lots
+                self.active_panel == "ending_lots"
                 and index == self.selected_lot_index
             )
             row_style = "reverse" if selected else None
@@ -704,7 +710,7 @@ class ConsoleNotifier:
 
         return Panel(
             table,
-            title=self._panel_title("lots", "⏳ ENDING SOON"),
+            title=self._panel_title("ending_lots", "⏳ ENDING SOON"),
             border_style="yellow",
         )
 
@@ -765,7 +771,7 @@ class ConsoleNotifier:
                 f"R обновить | Q выход{debug}"
             )
 
-        if self.active_panel == "lots":
+        if self.active_panel in self.LOT_PANELS:
             return (
                 f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
                 "ENTER открыть лот | ↑↓ выбрать | TAB панель | "
@@ -793,7 +799,7 @@ class ConsoleNotifier:
         return f" | [yellow]Клавиша: {self.last_key}[/]"
 
     def _has_active_item(self) -> bool:
-        if self.active_panel == "lots":
+        if self.active_panel in self.LOT_PANELS:
             return self.selected_lot() is not None
         if self.active_panel == "profiles":
             return self.selected_profile_id() is not None
@@ -994,10 +1000,11 @@ class ConsoleNotifier:
         return sorted(hot_lots, key=self._hot_lot_sort_key)[:self.MAX_LOTS]
 
     def _selectable_lots(self) -> list[ConsoleEndingLotState]:
-        hot_lots = self._hot_lots()
-        if hot_lots:
-            return hot_lots
-        return self._visible_ending_lots()
+        if self.active_panel == "hot_lots":
+            return self._hot_lots()
+        if self.active_panel == "ending_lots":
+            return self._visible_ending_lots()
+        return []
 
     @staticmethod
     def _hot_lot_sort_key(lot: ConsoleEndingLotState) -> tuple[int, int, str]:

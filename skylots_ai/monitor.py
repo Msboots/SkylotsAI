@@ -101,6 +101,9 @@ class Notifier(Protocol):
     def select_next_panel(self) -> None:
         ...
 
+    def select_previous_panel(self) -> None:
+        ...
+
     def select_active_row(self, step: int) -> None:
         ...
 
@@ -335,7 +338,7 @@ class Monitor:
             self.notifier.select_active_row(1)
             return "wait"
         if normalized == "left":
-            self.notifier.select_next_panel()
+            self.notifier.select_previous_panel()
             return "wait"
         if normalized == "right":
             self.notifier.select_next_panel()
@@ -343,20 +346,20 @@ class Monitor:
         if normalized == "enter":
             if self.notifier.current_panel() == "profiles":
                 self._edit_selected_profile()
-            elif self.notifier.current_panel() == "lots":
+            elif self._is_lot_panel():
                 self.notifier.open_selected_lot()
             return "wait"
         if normalized == "a":
             self._add_profile_from_dashboard()
             return "wait"
         if normalized == "b":
-            if self.notifier.current_panel() == "lots":
+            if self._is_lot_panel():
                 self._blacklist_selected_seller()
             return "wait"
         if normalized == "c":
             if self.notifier.current_panel() == "events":
                 self.notifier.clear_events()
-            elif self.notifier.current_panel() == "lots":
+            elif self._is_lot_panel():
                 self._copy_selected_lot_url()
             return "wait"
         if normalized == "d":
@@ -367,7 +370,7 @@ class Monitor:
             self._toggle_active_profile()
             return "wait"
         if normalized == "f":
-            if self.notifier.current_panel() == "lots":
+            if self._is_lot_panel():
                 self._favorite_selected_lot()
             return "wait"
         if normalized == "m":
@@ -403,6 +406,9 @@ class Monitor:
             return "stop"
 
         return "wait"
+
+    def _is_lot_panel(self) -> bool:
+        return self.notifier.current_panel() in {"hot_lots", "ending_lots"}
 
     def _add_profile_from_dashboard(self) -> None:
         name, url, interval = self.notifier.prompt_new_profile(
