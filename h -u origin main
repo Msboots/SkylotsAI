@@ -1,0 +1,65 @@
+[33mcommit 2db2d2b1e7496d452cae1323953d07d87cbed17f[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m
+Author: Msboots <dota2prosto@gmail.com>
+Date:   Sat Jul 4 07:35:21 2026 +0300
+
+    Polish Russian terminal dashboard
+
+[33mcommit 618349570ffddcc17b150762c486602c9e6b3405[m
+Author: Msboots <dota2prosto@gmail.com>
+Date:   Sat Jul 4 07:02:28 2026 +0300
+
+    Finish MVP monitoring startup
+
+[33mcommit 400f9867f26b85e933a1ce1e744f92b0405d1984[m
+Author: Msboots <dota2prosto@gmail.com>
+Date:   Sat Jul 4 05:05:28 2026 +0300
+
+    Polish terminal dashboard
+
+[33mcommit e6d6fcdba83d1d100decbf733734d08ebe94541c[m
+Author: Msboots <dota2prosto@gmail.com>
+Date:   Sat Jul 4 04:52:29 2026 +0300
+
+    Polish MVP monitor output
+
+[33mcommit 172bd9c71fddfe6582364df056c3af3356058e98[m
+Author: Msboots <dota2prosto@gmail.com>
+Date:   Sat Jul 4 04:33:30 2026 +0300
+
+    Implement live monitor console
+
+[33mcommit 91714c58e8909e1de701c553ca2224f31bd08eaa[m
+Author: Msboots <dota2prosto@gmail.com>
+Date:   Sat Jul 4 04:23:22 2026 +0300
+
+    Implement search profiles
+
+[33mcommit 095748d508af8f106e2f31fbf6656c8551ccf7d3[m
+Author: Msboots <dota2prosto@gmail.com>
+Date:   Sat Jul 4 04:07:51 2026 +0300
+
+    Implement monitoring engine
+
+[33mcommit 202ea9db76da3fc125ec64037dc87164ef955f77[m
+Author: Msboots <dota2prosto@gmail.com>
+Date:   Sat Jul 4 04:02:55 2026 +0300
+
+    Add agent rules
+
+[33mcommit 1a2f4cd7729e505869c8a9dafb4cd8978e4dd389[m
+Author: Msboots <dota2prosto@gmail.com>
+Date:   Sat Jul 4 03:40:22 2026 +0300
+
+    feat: add project core and Skylots lot parser
+    
+    Bootstrap initializes folders, settings, SQLite, and logging via app.py;
+    add models, config, database, logger modules and Parser that fetches lots
+    from skylots.org into list[Lot] without DB writes or console output.
+    
+    Co-authored-by: Cursor <cursoragent@cursor.com>
+
+[33mcommit 6c48f5fdad030ce5714f6d82127f5b3702a52528[m
+Author: Msboots <dota2prosto@gmail.com>
+Date:   Sat Jul 4 03:17:22 2026 +0300
+
+    Bootstrap project

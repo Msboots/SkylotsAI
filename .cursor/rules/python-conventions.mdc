@@ -1,0 +1,36 @@
+---
+description: Python-конвенции Skylots AI
+globs: **/*.py
+alwaysApply: false
+---
+
+# Python-конвенции
+
+## Стиль
+
+- Классы: `PascalCase` (`Config`, `Database`, `Bootstrap`)
+- Функции и переменные: `snake_case`
+- Docstring модуля на русском, одной строкой
+- Минимальный diff: не добавлять лишние абстракции и обработку редких edge cases
+
+## Пути и данные
+
+- `Path("settings/config.json")`, `Path("data/skylots.db")` — относительно cwd проекта
+- JSON: `encoding="utf-8"`, `ensure_ascii=False`, `indent=4`
+
+## SQLite
+
+Единая схема в `Database.initialize()`:
+
+- `lots` — id, title, seller, price, url, city, rating, end_time, first_seen, last_seen
+- `history` — lot_id, price, checked_at
+- `notifications` — lot_id, notification_type, sent_at
+- `sellers` — seller, rating, lots_found, blacklisted, favorite, notes
+
+## Вывод в консоль
+
+Bootstrap и init: формат `[ OK ] сообщение`.
+
+## Зависимости
+
+Парсинг: `requests`, `beautifulsoup4`, `lxml`. Новые зависимости — в `requirements.txt`.
