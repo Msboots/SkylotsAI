@@ -66,7 +66,7 @@ class ConsoleNotifier:
 
     MAX_LOTS = 10
     MAX_ENDING_LOTS = 10
-    MAX_EVENTS = 5
+    MAX_EVENTS = 7
     SORT_MODES = ("ending", "price", "title")
     LOT_PANELS = ("hot_lots", "ending_lots", "favorites")
     PANELS = (*LOT_PANELS, "events")
@@ -583,15 +583,19 @@ class ConsoleNotifier:
             self.live.update(self.render())
 
     def render(self) -> Panel:
-        workspace = (
-            self._profiles_table()
+        workspaces: list[Panel] = (
+            [self._profiles_table()]
             if self.profiles_expanded
-            else self._workspace_table()
+            else [
+                self._hot_lots_table(),
+                self._ending_lots_table(),
+                self._favorites_table(),
+            ]
         )
         return Panel(
             Group(
                 self._header_table(),
-                workspace,
+                *workspaces,
                 self._events_panel(),
                 self._status_bar(),
             ),
@@ -776,18 +780,56 @@ class ConsoleNotifier:
         empty_message: str,
         border_style: str,
     ) -> Panel:
-        table = Table(expand=True, padding=(0, 1), box=None)
-        table.add_column("★", style="yellow", no_wrap=True)
-        table.add_column("Осталось", style="bold", no_wrap=True)
-        table.add_column("Цена", justify="right", no_wrap=True)
-        table.add_column("Ставок", justify="right")
-        table.add_column("Название", overflow="ellipsis", no_wrap=True)
+        narrow = self.console.size.width < 100 or self.compact_mode
+        table = Table(
+            expand=True,
+            padding=(0, 1),
+            collapse_padding=True,
+            box=None,
+        )
+        table.add_column("★", style="yellow", width=1, no_wrap=True)
         table.add_column(
-            "Продавец (Рейтинг)",
+            "До",
+            style="bold",
+            width=8,
+            min_width=5,
+            no_wrap=True,
+        )
+        table.add_column(
+            "Цена",
+            justify="right",
+            width=10,
+            min_width=7,
+            no_wrap=True,
+        )
+        table.add_column(
+            "Ст.",
+            justify="right",
+            width=5,
+            min_width=3,
+            no_wrap=True,
+        )
+        table.add_column(
+            "Название",
+            ratio=3,
+            min_width=8,
             overflow="ellipsis",
             no_wrap=True,
         )
-        table.add_column("ID", style="cyan", no_wrap=True)
+        table.add_column(
+            "Продавец (★)",
+            ratio=2,
+            min_width=6,
+            overflow="ellipsis",
+            no_wrap=True,
+        )
+        table.add_column(
+            "ID",
+            style="cyan",
+            width=10,
+            min_width=6,
+            no_wrap=True,
+        )
         self._clamp_selection()
 
         if not lots:
@@ -807,7 +849,7 @@ class ConsoleNotifier:
                 ),
                 self._price_text(lot.price),
                 self._bids_text(lot.bids),
-                self._trim(lot.title, 28 if self.compact_mode else 48),
+                self._trim(lot.title, 20 if narrow else 48),
                 self._seller_rating_text(lot),
                 lot.lot_id,
             ]
@@ -836,7 +878,11 @@ class ConsoleNotifier:
 
     def _events_panel(self) -> Panel:
         if not self.events:
-            content = Text("Событий пока нет", style="dim")
+            content = Text(
+                "• Событий пока нет. Новые сканирования и изменения "
+                "появятся здесь.",
+                style="dim",
+            )
         else:
             content = Text()
             for index, event in enumerate(self.events[:self.MAX_EVENTS]):
@@ -848,13 +894,28 @@ class ConsoleNotifier:
                     )
                     else ""
                 )
-                content.append(event, style=style)
+                selected = (
+                    self.active_panel == "events"
+                    and index == self.selected_event_index
+                )
+                marker = "▶" if selected else " "
+                content.append(
+                    f"{marker} {self._event_icon(event)} {event}",
+                    style=style,
+                )
                 if index < min(len(self.events), self.MAX_EVENTS) - 1:
                     content.append("\n")
         return Panel(
             content,
-            title=self._panel_title("events", "ПОСЛЕДНИЕ СОБЫТИЯ"),
-            border_style="yellow",
+            title=self._panel_title(
+                "events",
+                "📋 СОБЫТИЯ · G фокус · K очистить",
+            ),
+            border_style=(
+                "bright_yellow"
+                if self.active_panel == "events"
+                else "yellow"
+            ),
         )
 
     def _status_bar(self) -> Panel:
@@ -870,32 +931,45 @@ class ConsoleNotifier:
 
     def _context_menu(self) -> str:
         debug = self._keyboard_debug_text()
-        if self.active_panel in self.LOT_PANELS:
-            return (
-                f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
-                "H/Н горячие | E завершаются | F избранное | P профили | "
-                "G события | S сканировать | ↑↓ выбрать | ENTER открыть | "
-                "Z ★ | C ссылка | B чёрный список | O сортировка | "
-                f"X компактно | Q выход{debug}"
-            )
         if self.active_panel == "profiles":
             return (
-                f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
-                "P закрыть профили | ↑↓ выбрать | ENTER изменить | "
-                "A добавить | T вкл/выкл | I интервал | D удалить | "
-                f"M режим все/один | S сканировать | Q выход{debug}"
-            )
-        if self.active_panel == "events":
-            return (
-                f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
-                "H/Н горячие | E завершаются | F избранное | P профили | "
-                f"K очистить события | S сканировать | Q выход{debug}"
+                f"[bold]{self.status}[/]  [cyan]{self.countdown} сек[/]"
+                "\n[bold cyan]ПРОФИЛИ[/]  "
+                "P закрыть  ↑↓ выбрать  Enter изменить  "
+                "A добавить  T вкл/выкл  I интервал  "
+                f"D удалить  M режим  S сканировать  Q выход{debug}"
             )
 
-        return (
-            f"[bold]{self.status}[/] | H/Н горячие | E завершаются | "
-            f"F избранное | P профили | Q выход{debug}"
+        actions = (
+            "K очистить  ↑↓ выбрать событие"
+            if self.active_panel == "events"
+            else (
+                "↑↓ выбрать лот  Enter открыть  Z избранное  "
+                "C ссылка  B блок продавца  O сортировка"
+            )
         )
+        return (
+            f"[bold]{self.status}[/]  [cyan]{self.countdown} сек[/]  |  "
+            "[bold cyan]РАЗДЕЛЫ[/]  H/Н HOT  E ENDING  "
+            "F ИЗБРАННОЕ  P ПРОФИЛИ  G СОБЫТИЯ"
+            f"\n[bold cyan]ДЕЙСТВИЯ[/]  {actions}  "
+            f"S сканировать  Q выход{debug}"
+        )
+
+    @staticmethod
+    def _event_icon(event: str) -> str:
+        normalized = event.casefold()
+        if "ошиб" in normalized or "error" in normalized:
+            return "✖"
+        if "сканирован" in normalized:
+            return "↻"
+        if "избран" in normalized:
+            return "★"
+        if "цен" in normalized:
+            return "₴"
+        if "нов" in normalized or "лот" in normalized:
+            return "●"
+        return "•"
 
     def _keyboard_debug_text(self) -> str:
         if not self.keyboard_debug:

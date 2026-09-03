@@ -141,7 +141,7 @@ class ConsoleNotifierNavigationTests(unittest.TestCase):
         rendered = output.getvalue()
 
         self.assertIn("★", rendered)
-        self.assertIn("Продавец (Рейтинг)", rendered)
+        self.assertIn("Продавец (★)", rendered)
         self.assertIn("seller (42)", rendered)
         self.assertNotIn("Профиль", rendered)
         self.assertNotIn("Почему HOT", rendered)
@@ -159,7 +159,7 @@ class ConsoleNotifierNavigationTests(unittest.TestCase):
         rendered = output.getvalue()
 
         self.assertIn("Продавец", rendered)
-        self.assertIn("Ставок", rendered)
+        self.assertIn("Ст.", rendered)
         self.assertNotIn("Профиль", rendered)
 
     def test_favorites_workspace_contains_starred_lots(self) -> None:
@@ -180,12 +180,62 @@ class ConsoleNotifierNavigationTests(unittest.TestCase):
         console.print(self.notifier.render())
         shown_render = output.getvalue()
 
-        self.assertNotIn("ПРОФИЛИ", hidden_render)
-        self.assertIn("ПРОФИЛИ", shown_render)
+        self.assertNotIn("Вкл", hidden_render)
+        self.assertIn("Вкл", shown_render)
+        self.assertIn("🔥 HOT LOTS", hidden_render)
+        self.assertNotIn("🔥 HOT LOTS", shown_render)
         self.assertEqual(self.notifier.current_panel(), "profiles")
 
         self.notifier.toggle_profiles_panel()
         self.assertEqual(self.notifier.current_panel(), "hot_lots")
+
+    def test_all_lot_workspaces_remain_visible_when_focus_changes(self) -> None:
+        self.notifier.show_panel("favorites")
+        output = StringIO()
+        console = Console(file=output, width=160, color_system=None)
+        console.print(self.notifier.render())
+        rendered = output.getvalue()
+
+        self.assertIn("HOT LOTS", rendered)
+        self.assertIn("ENDING SOON", rendered)
+        self.assertIn("ИЗБРАННОЕ", rendered)
+        self.assertIn("▶ ★ ИЗБРАННОЕ", rendered)
+
+    def test_narrow_layout_keeps_time_price_and_bids(self) -> None:
+        output = StringIO()
+        self.notifier.console = Console(
+            file=output,
+            width=58,
+            color_system=None,
+        )
+
+        self.notifier.console.print(self.notifier._hot_lots_table())
+        rendered = output.getvalue()
+
+        self.assertIn("До", rendered)
+        self.assertIn("Цена", rendered)
+        self.assertIn("Ст.", rendered)
+        self.assertIn("5м", rendered)
+        self.assertIn("10 грн", rendered)
+
+    def test_events_have_icons_and_clear_hint(self) -> None:
+        self.notifier.add_event("Сканирование профиля: Hot")
+        output = StringIO()
+        console = Console(file=output, width=120, color_system=None)
+
+        console.print(self.notifier._events_panel())
+        rendered = output.getvalue()
+
+        self.assertIn("↻", rendered)
+        self.assertIn("G фокус", rendered)
+        self.assertIn("K очистить", rendered)
+
+    def test_hotkey_help_is_split_into_sections(self) -> None:
+        menu = self.notifier._context_menu()
+
+        self.assertIn("РАЗДЕЛЫ", menu)
+        self.assertIn("ДЕЙСТВИЯ", menu)
+        self.assertIn("\n", menu)
 
 
 class MonitorHotkeyTests(unittest.TestCase):
