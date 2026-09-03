@@ -9,6 +9,7 @@ from skylots_ai.console import (
     ConsoleNotifier,
     ConsoleProfileState,
 )
+from skylots_ai.models import Lot
 from skylots_ai.monitor import Monitor
 
 
@@ -97,6 +98,32 @@ class ConsoleNotifierNavigationTests(unittest.TestCase):
         self.notifier.cycle_lot_sort()
 
         self.assertIs(self.notifier.selected_lot(), low_price)
+
+    def test_update_ending_lots_uses_current_sorting(self) -> None:
+        self.notifier.update_ending_lots(
+            "Hot",
+            [
+                Lot(
+                    id="later",
+                    title="Later",
+                    seller="seller",
+                    price=5,
+                    url="https://example.test/later",
+                    remaining_time_text="10 мин",
+                ),
+                Lot(
+                    id="sooner",
+                    title="Sooner",
+                    seller="seller",
+                    price=10,
+                    url="https://example.test/sooner",
+                    remaining_time_text="1 мин",
+                ),
+            ],
+        )
+
+        lots = self.notifier.ending_lots["hot"]
+        self.assertEqual([lot.lot_id for lot in lots], ["sooner", "later"])
 
     def test_hot_table_shows_favorite_and_reason(self) -> None:
         self.notifier.compact_mode = False

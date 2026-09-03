@@ -503,7 +503,7 @@ class ConsoleNotifier:
 
         self.ending_lots[profile.profile_id] = sorted(
             ending_lots,
-            key=self._ending_lot_sort_key,
+            key=self._lot_view_sort_key,
         )
         self.refresh()
 
