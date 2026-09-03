@@ -1,0 +1,36 @@
+---
+description: Архитектура и структура Skylots AI Assistant
+alwaysApply: true
+---
+
+# Skylots AI — архитектура
+
+## Назначение
+
+Мониторинг аукционов skylots.org: новые лоты, фильтры, история цен, Telegram, AI-анализ.
+
+## Структура каталогов
+
+- `skylots_ai/` — ядро (config, database, bootstrap)
+- `settings/` — конфиг и списки (`config.json`, `keywords.txt`, `blacklist.txt`, `favorites.txt`, `whitelist.txt`)
+- `data/` — SQLite (`skylots.db`)
+- `logs/`, `cache/` — логи и кэш
+- Скрипты верхнего уровня: `app.py` (bootstrap), `parser.py`, `watcher.py`, `main.py`
+
+## Правила
+
+- Бизнес-логику и инфраструктуру добавлять в `skylots_ai/`, не размазывать по корню.
+- Настройки читать через `skylots_ai.config.Config`, путь: `settings/config.json`.
+- БД инициализировать через `skylots_ai.database.Database`, не дублировать схему в других модулях.
+- Bootstrap (`skylots_ai.bootstrap.Bootstrap`) — только создание папок и дефолтных файлов; схему таблиц делегировать `Database.initialize()`.
+- Секреты и локальные настройки не коммитить (`settings/local.json`, `cookies.json`).
+
+## Точки входа
+
+```python
+# Инициализация проекта
+python app.py
+
+# Конфиг
+from skylots_ai.config import Config
+```
