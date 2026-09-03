@@ -18,7 +18,7 @@ from skylots_ai.console import ConsoleNotifier
 from skylots_ai.database import Database
 from skylots_ai.keyboard import KeyEvent, KeyboardReader
 from skylots_ai.logger import LOG_NAME, setup
-from skylots_ai.models import Lot
+from skylots_ai.models import Lot, PriceChange
 from skylots_ai.parser import Parser
 from skylots_ai.profiles import ProfileManager, SearchProfile
 
@@ -91,6 +91,9 @@ class Notifier(Protocol):
     def print_new_lot(self, lot: Lot) -> None:
         ...
 
+    def print_price_change(self, change: PriceChange) -> None:
+        ...
+
     def update_ending_lots(self, profile_name: str, lots: Sequence[Lot]) -> None:
         ...
 
@@ -146,6 +149,7 @@ class ProfileScanSummary:
     new_lots: int = 0
     existing_lots: int = 0
     new_lot_items: list[Lot] = field(default_factory=list)
+    price_changes: list[PriceChange] = field(default_factory=list)
 
 
 class Monitor:
@@ -246,8 +250,12 @@ class Monitor:
         )
         seen_at = self._now()
 
-        new_lots, database_lots_count = self.database.sync_lots(lots, seen_at)
+        new_lots, price_changes, database_lots_count = self.database.sync_lots(
+            lots,
+            seen_at,
+        )
         summary.new_lot_items.extend(new_lots)
+        summary.price_changes.extend(price_changes)
         summary.new_lots = len(new_lots)
         summary.existing_lots = max(summary.fetched - summary.new_lots, 0)
         self.notifier.update_database_lots_count(database_lots_count)
@@ -255,12 +263,26 @@ class Monitor:
         for lot in new_lots:
             self.logger.info("New lot: %s | %s", lot.title, lot.url)
 
+        for change in price_changes:
+            self.logger.info(
+                "Price changed: %s | %s -> %s | %s",
+                change.lot.title,
+                change.previous_price,
+                change.current_price,
+                change.lot.url,
+            )
+            self.notifier.print_price_change(change)
+
         self.logger.info(
-            "Scan complete: profile=%s fetched=%s new=%s existing=%s",
+            (
+                "Scan complete: profile=%s fetched=%s new=%s "
+                "existing=%s price_changes=%s"
+            ),
             profile.name,
             summary.fetched,
             summary.new_lots,
             summary.existing_lots,
+            len(summary.price_changes),
         )
 
         self.notifier.print_summary(

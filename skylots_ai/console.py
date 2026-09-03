@@ -15,7 +15,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from skylots_ai.models import Lot
+from skylots_ai.models import Lot, PriceChange
 from skylots_ai.profiles import SearchProfile
 
 
@@ -432,6 +432,16 @@ class ConsoleNotifier:
         self.latest_lots.sort(key=self._lot_sort_key)
         self.add_event(f"Новый лот: {lot.title}", refresh=False)
         self.refresh()
+
+    def print_price_change(self, change: PriceChange) -> None:
+        direction = "↓" if change.decreased else "↑"
+        label = "Цена снижена" if change.decreased else "Цена повышена"
+        self.add_event(
+            (
+                f"{direction} {label}: {change.lot.title} "
+                f"{change.previous_price} → {change.current_price} грн"
+            ),
+        )
 
     def update_ending_lots(self, profile_name: str, lots: Sequence[Lot]) -> None:
         profile = self._find_profile_state(profile_name)
