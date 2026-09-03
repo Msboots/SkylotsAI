@@ -66,6 +66,13 @@ class ConsoleNotifierNavigationTests(unittest.TestCase):
 
         self.assertIsNone(self.notifier.selected_lot())
 
+    def test_summary_refreshes_dashboard_once(self) -> None:
+        self.notifier.refresh = Mock()
+
+        self.notifier.print_summary("Hot", fetched=48, new_lots=2)
+
+        self.notifier.refresh.assert_called_once_with()
+
 
 class MonitorHotkeyTests(unittest.TestCase):
     def setUp(self) -> None:

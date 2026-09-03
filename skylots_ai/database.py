@@ -1,7 +1,6 @@
-"""
-Работа с базой данных SQLite.
-"""
+"""Работа с базой данных SQLite."""
 
+from collections.abc import Sequence
 from pathlib import Path
 import sqlite3
 
@@ -228,6 +227,66 @@ class Database:
         conn.commit()
         conn.close()
 
+    def sync_lots(
+        self,
+        lots: Sequence[Lot],
+        seen_at: str,
+    ) -> tuple[list[Lot], int]:
+        unique_lots = list({lot.id: lot for lot in lots}.values())
+        conn = self.connect()
+
+        try:
+            cur = conn.cursor()
+            existing_ids = self._get_existing_lot_ids(
+                cur,
+                [lot.id for lot in unique_lots],
+            )
+            new_lots = [lot for lot in unique_lots if lot.id not in existing_ids]
+
+            cur.executemany(
+                """
+                INSERT INTO lots (
+                    id,
+                    title,
+                    seller,
+                    price,
+                    url,
+                    city,
+                    rating,
+                    end_time,
+                    first_seen,
+                    last_seen
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    last_seen = excluded.last_seen
+                """,
+                [
+                    (
+                        lot.id,
+                        lot.title,
+                        lot.seller,
+                        lot.price,
+                        lot.url,
+                        lot.city,
+                        lot.rating,
+                        lot.end_time,
+                        seen_at,
+                        seen_at,
+                    )
+                    for lot in unique_lots
+                ],
+            )
+            cur.execute("SELECT COUNT(*) FROM lots")
+            total_count = int(cur.fetchone()[0])
+            conn.commit()
+            return new_lots, total_count
+        except sqlite3.DatabaseError:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def update_last_seen(self, lot_id: str, seen_at: str) -> None:
         conn = self.connect()
         cur = conn.cursor()
@@ -245,6 +304,25 @@ class Database:
         count = cur.fetchone()[0]
         conn.close()
         return int(count)
+
+    @staticmethod
+    def _get_existing_lot_ids(
+        cur: sqlite3.Cursor,
+        lot_ids: Sequence[str],
+    ) -> set[str]:
+        existing_ids: set[str] = set()
+        batch_size = 900
+
+        for start in range(0, len(lot_ids), batch_size):
+            batch = lot_ids[start : start + batch_size]
+            placeholders = ", ".join("?" for _ in batch)
+            cur.execute(
+                f"SELECT id FROM lots WHERE id IN ({placeholders})",
+                batch,
+            )
+            existing_ids.update(str(row["id"]) for row in cur.fetchall())
+
+        return existing_ids
 
     @staticmethod
     def _row_to_lot(row: sqlite3.Row) -> Lot:

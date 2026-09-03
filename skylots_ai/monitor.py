@@ -6,9 +6,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import logging
+import math
 from pathlib import Path
 import shutil
 import subprocess
+import time
 from typing import Any, Protocol
 
 from skylots_ai.config import Config
@@ -166,6 +168,8 @@ class Monitor:
         self.monitor_mode = self.config.monitor_mode
         self.active_profile_id = self.config.active_profile_id
         self.keyboard_debug = False
+        self._last_scan_times: dict[str, float] = {}
+        self._force_scan = False
         self._ensure_active_profile()
 
     def run(self) -> None:
@@ -213,9 +217,14 @@ class Monitor:
 
     def single_run(self) -> list[ProfileScanSummary]:
         summaries: list[ProfileScanSummary] = []
+        profiles = self._profiles_to_scan()
+        self._force_scan = False
 
-        for profile in self._profiles_to_scan():
-            summaries.append(self._scan_profile(profile))
+        for profile in profiles:
+            try:
+                summaries.append(self._scan_profile(profile))
+            finally:
+                self._last_scan_times[profile.id] = time.monotonic()
 
         return summaries
 
@@ -237,25 +246,22 @@ class Monitor:
         )
         seen_at = self._now()
 
-        for lot in lots:
-            existing_lot = self.database.get_lot(lot.id)
+        new_lots, database_lots_count = self.database.sync_lots(lots, seen_at)
+        summary.new_lot_items.extend(new_lots)
+        summary.new_lots = len(new_lots)
+        summary.existing_lots = max(summary.fetched - summary.new_lots, 0)
+        self.notifier.update_database_lots_count(database_lots_count)
 
-            if existing_lot is None:
-                self.database.insert_lot(lot, seen_at)
-                self.notifier.update_database_lots_count(
-                    self.database.count_lots(),
-                )
-                summary.new_lots += 1
-                summary.new_lot_items.append(lot)
-                self.logger.info("New lot: %s | %s", lot.title, lot.url)
-            else:
-                self.database.update_last_seen(lot.id, seen_at)
-                summary.existing_lots += 1
+        for lot in new_lots:
+            self.logger.info("New lot: %s | %s", lot.title, lot.url)
 
-        self.profile_manager.update_last_scan(profile.id, seen_at)
-        self.logger.info("Total lots: %s", summary.fetched)
-        self.logger.info("New lots: %s", summary.new_lots)
-        self.logger.info("Existing lots: %s", summary.existing_lots)
+        self.logger.info(
+            "Scan complete: profile=%s fetched=%s new=%s existing=%s",
+            profile.name,
+            summary.fetched,
+            summary.new_lots,
+            summary.existing_lots,
+        )
 
         self.notifier.print_summary(
             profile_name=summary.profile_name,
@@ -389,6 +395,7 @@ class Monitor:
             self._reload_profiles()
             return "wait"
         if normalized == "s":
+            self._force_scan = True
             self.notifier.add_event(
                 "Сканирование запущено вручную",
             )
@@ -459,28 +466,53 @@ class Monitor:
 
     def _profiles_to_scan(self) -> list[SearchProfile]:
         if self.monitor_mode == "multi":
-            return self.profile_manager.get_enabled()
+            profiles = self.profile_manager.get_enabled()
+        else:
+            active_profile = self._active_profile()
+            if active_profile is None or not active_profile.enabled:
+                return []
+            profiles = [active_profile]
 
-        active_profile = self._active_profile()
-        if active_profile is None or not active_profile.enabled:
-            return []
-        return [active_profile]
+        if self._force_scan:
+            return profiles
+
+        now = time.monotonic()
+        return [
+            profile
+            for profile in profiles
+            if self._profile_is_due(profile, now)
+        ]
 
     def _current_wait_seconds(self) -> int:
         if self.monitor_mode == "single":
             active_profile = self._active_profile()
-            if active_profile is not None and active_profile.enabled:
-                return max(active_profile.interval, 5)
+            profiles = (
+                [active_profile]
+                if active_profile is not None and active_profile.enabled
+                else []
+            )
+        else:
+            profiles = self.profile_manager.get_enabled()
+
+        if not profiles:
             return self.config.check_interval
 
-        intervals = [
-            profile.interval
-            for profile in self.profile_manager.get_enabled()
-            if profile.interval >= 5
-        ]
-        if intervals:
-            return min(intervals)
-        return self.config.check_interval
+        now = time.monotonic()
+        waits: list[float] = []
+        for profile in profiles:
+            last_scan = self._last_scan_times.get(profile.id)
+            if last_scan is None:
+                return 1
+            interval = max(profile.interval, 5)
+            waits.append(max(interval - (now - last_scan), 0))
+
+        return max(1, math.ceil(min(waits)))
+
+    def _profile_is_due(self, profile: SearchProfile, now: float) -> bool:
+        last_scan = self._last_scan_times.get(profile.id)
+        if last_scan is None:
+            return True
+        return now - last_scan >= max(profile.interval, 5)
 
     def _active_profile(self) -> SearchProfile | None:
         return self.profile_manager.get_by_id(self.active_profile_id)

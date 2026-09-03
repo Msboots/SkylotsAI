@@ -3,6 +3,7 @@
 """
 
 import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 LOG_NAME = "skylots"
@@ -26,8 +27,10 @@ def setup(root: Path | None = None) -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    file_handler = logging.FileHandler(
+    file_handler = RotatingFileHandler(
         logs_dir / LOG_FILE,
+        maxBytes=2_000_000,
+        backupCount=3,
         encoding="utf-8",
     )
     file_handler.setLevel(logging.DEBUG)

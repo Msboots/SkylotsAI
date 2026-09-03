@@ -120,7 +120,7 @@ class ConsoleNotifier:
             )
             for name in profiles
         }
-        self.add_event("Skylots AI Assistant запущен")
+        self.add_event("Skylots AI Assistant запущен", refresh=False)
 
         if self.live_enabled and self.live is None:
             self.live = Live(
@@ -144,7 +144,10 @@ class ConsoleNotifier:
         if profile_name:
             self._set_profiles_status("ОЖИДАНИЕ")
             self._set_profile_status(profile_name, "СКАНИРОВАНИЕ")
-            self.add_event(f"Сканирование профиля: {profile_name}")
+            self.add_event(
+                f"Сканирование профиля: {profile_name}",
+                refresh=False,
+            )
 
         self.refresh()
 
@@ -243,12 +246,15 @@ class ConsoleNotifier:
     def open_selected_lot(self) -> None:
         selected_lot = self.selected_lot()
         if selected_lot is None:
-            self.add_event("Лот не выбран")
+            self.add_event("Лот не выбран", refresh=False)
             self.refresh()
             return
 
         webbrowser.open(selected_lot.url)
-        self.add_event(f"Открыт лот: {selected_lot.lot_id}")
+        self.add_event(
+            f"Открыт лот: {selected_lot.lot_id}",
+            refresh=False,
+        )
         self.refresh()
 
     def selected_lot(self) -> ConsoleEndingLotState | None:
@@ -391,11 +397,20 @@ class ConsoleNotifier:
         self.total_existing_lots += existing_lots
         self.total_today += fetched
         self.new_today += new_lots
-        self.add_event(f"{profile_name}: получено лотов {fetched}")
+        self.add_event(
+            f"{profile_name}: получено лотов {fetched}",
+            refresh=False,
+        )
         if new_lots:
-            self.add_event(f"{profile_name}: новых лотов {new_lots}")
+            self.add_event(
+                f"{profile_name}: новых лотов {new_lots}",
+                refresh=False,
+            )
         else:
-            self.add_event(f"{profile_name}: новых лотов нет")
+            self.add_event(
+                f"{profile_name}: новых лотов нет",
+                refresh=False,
+            )
         self.refresh()
 
     def print_new_lot(self, lot: Lot) -> None:
@@ -415,7 +430,7 @@ class ConsoleNotifier:
         )
         self.latest_lots = self.latest_lots[:self.MAX_LOTS]
         self.latest_lots.sort(key=self._lot_sort_key)
-        self.add_event(f"Новый лот: {lot.title}")
+        self.add_event(f"Новый лот: {lot.title}", refresh=False)
         self.refresh()
 
     def update_ending_lots(self, profile_name: str, lots: Sequence[Lot]) -> None:
@@ -453,7 +468,7 @@ class ConsoleNotifier:
     ) -> None:
         details = " ".join(lines or [])
         self.status = self._translate_status(f"{title} {details}".strip())
-        self.add_event(self.status)
+        self.add_event(self.status, refresh=False)
         self.refresh()
 
     def print_once_summary(self, summaries: Sequence[object]) -> None:
@@ -497,17 +512,14 @@ class ConsoleNotifier:
     def render(self) -> Panel:
         return Panel(
             Group(
+                self._header_table(),
                 self._hot_lots_table(),
                 self._ending_lots_table(),
                 self._profiles_table(),
-                self._stats_line(),
                 self._events_panel(),
                 self._status_bar(),
             ),
-            title=(
-                "[bold cyan]Skylots AI Assistant[/] "
-                "[bold]Auction Workstation[/]"
-            ),
+            title="[bold cyan]Skylots AI Assistant[/] — [bold]Монитор аукционов[/]",
             border_style="bright_blue",
         )
 
@@ -519,25 +531,33 @@ class ConsoleNotifier:
         table.add_column(ratio=1)
         table.add_column(ratio=1)
         table.add_column(ratio=1)
+        table.add_column(ratio=1)
+        system_ok = sum(self.system_statuses.values())
+        system_total = len(self.system_statuses)
+        system_style = "green" if system_ok == system_total else "yellow"
         table.add_row(
             self._metric("Статус", self.status, self._status_style(self.status)),
             self._metric("Режим", self._mode_label(), "cyan"),
             self._metric("Активный", self._active_profile_name(), "cyan"),
             self._metric(
-                "Время",
-                datetime.now().strftime("%H:%M:%S"),
-                "cyan",
-            ),
-            self._metric(
                 "До скана",
                 f"{self.countdown} сек",
                 "cyan",
             ),
-            self._metric("Профилей", str(self.profiles_loaded), "cyan"),
+            self._metric(
+                "Новых сегодня",
+                str(self.new_today),
+                "green",
+            ),
             self._metric(
                 "Лотов в базе",
                 str(self.database_lots_count),
                 "cyan",
+            ),
+            self._metric(
+                "Система",
+                f"{system_ok}/{system_total}",
+                system_style,
             ),
         )
         return Panel(table, title="ОБЗОР", border_style="blue")
@@ -756,11 +776,12 @@ class ConsoleNotifier:
         text = self._context_menu()
         return Panel(text, border_style=self._status_style(self.status))
 
-    def add_event(self, message: str) -> None:
+    def add_event(self, message: str, refresh: bool = True) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.events.insert(0, f"[{timestamp}] {message}")
         self.events = self.events[:self.MAX_EVENTS]
-        self.refresh()
+        if refresh:
+            self.refresh()
 
     def _context_menu(self) -> str:
         debug = self._keyboard_debug_text()
