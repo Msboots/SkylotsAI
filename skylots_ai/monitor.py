@@ -295,7 +295,12 @@ class Monitor:
             )
             self.notifier.print_price_change(change)
 
-        self.logger.info(
+        log_scan = (
+            self.logger.info
+            if summary.new_lots or summary.price_changes
+            else self.logger.debug
+        )
+        log_scan(
             (
                 "Scan complete: profile=%s fetched=%s new=%s "
                 "existing=%s price_changes=%s"

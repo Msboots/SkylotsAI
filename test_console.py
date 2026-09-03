@@ -78,6 +78,15 @@ class ConsoleNotifierNavigationTests(unittest.TestCase):
 
         self.notifier.refresh.assert_called_once_with()
 
+    def test_unchanged_fetched_count_is_not_repeated_in_events(self) -> None:
+        self.notifier.print_summary("Hot", fetched=1000, new_lots=0)
+        self.notifier.print_summary("Hot", fetched=1000, new_lots=0)
+
+        fetched_events = [
+            event for event in self.notifier.events if "лотов 1000" in event
+        ]
+        self.assertEqual(len(fetched_events), 1)
+
     def test_favorites_filter_keeps_only_starred_lots(self) -> None:
         self.notifier.set_favorites({self.expensive_lot.url})
         self.notifier.active_panel = "ending_lots"
@@ -230,12 +239,66 @@ class ConsoleNotifierNavigationTests(unittest.TestCase):
         self.assertIn("G фокус", rendered)
         self.assertIn("K очистить", rendered)
 
+    def test_event_types_have_intuitive_colors(self) -> None:
+        self.assertIn("red", self.notifier._event_style("Ошибка сети"))
+        self.assertIn("cyan", self.notifier._event_style("Сканирование"))
+        self.assertIn("magenta", self.notifier._event_style("В избранное"))
+        self.assertIn("yellow", self.notifier._event_style("Цена снижена"))
+        self.assertIn("green", self.notifier._event_style("Новый лот"))
+
     def test_hotkey_help_is_split_into_sections(self) -> None:
         menu = self.notifier._context_menu()
 
         self.assertIn("РАЗДЕЛЫ", menu)
         self.assertIn("ДЕЙСТВИЯ", menu)
         self.assertIn("\n", menu)
+        self.assertIn("[bold red]H/Н[/]", menu)
+        self.assertIn("[bold yellow]E[/]", menu)
+        self.assertIn("[bold magenta]F[/]", menu)
+        self.assertIn("[bold blue]P[/]", menu)
+
+    def test_new_lots_block_appears_between_favorites_and_events(self) -> None:
+        self.notifier.print_new_lot(
+            Lot(
+                id="new-lot",
+                title="New lot",
+                seller="seller",
+                price=15,
+                url="https://example.test/new-lot",
+                remaining_time_text="4 мин",
+                bids_count=2,
+                rating=99,
+            ),
+        )
+        output = StringIO()
+        console = Console(file=output, width=160, color_system=None)
+        console.print(self.notifier.render())
+        rendered = output.getvalue()
+
+        favorites_index = rendered.index("ИЗБРАННОЕ")
+        new_lots_index = rendered.index("НОВЫЕ ЛОТЫ")
+        events_index = rendered.index("СОБЫТИЯ")
+        self.assertLess(favorites_index, new_lots_index)
+        self.assertLess(new_lots_index, events_index)
+
+    def test_overview_uses_vertical_metric_pairs(self) -> None:
+        output = StringIO()
+        console = Console(file=output, width=120, color_system=None)
+        console.print(self.notifier._header_table())
+        lines = output.getvalue().splitlines()
+        status_line = next(line for line in lines if "Статус" in line)
+        scan_line = next(line for line in lines if "До скана" in line)
+        mode_line = next(line for line in lines if "Режим" in line)
+        active_line = next(line for line in lines if "Активный" in line)
+
+        self.assertLessEqual(
+            abs(status_line.index("Статус") - scan_line.index("До скана")),
+            1,
+        )
+        self.assertLessEqual(
+            abs(mode_line.index("Режим") - active_line.index("Активный")),
+            1,
+        )
 
 
 class MonitorHotkeyTests(unittest.TestCase):

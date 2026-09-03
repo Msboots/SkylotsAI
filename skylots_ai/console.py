@@ -43,6 +43,7 @@ class ConsoleLotState:
     remaining_time: str
     bids: str
     url: str
+    rating: float | None = None
 
 
 @dataclass
@@ -448,6 +449,7 @@ class ConsoleNotifier:
                 name=profile_name,
             )
             self.profiles[profile.profile_id] = profile
+        previous_fetched = profile.fetched
         profile.status = "РАБОТАЕТ"
         profile.fetched = fetched
         profile.new_lots = new_lots
@@ -459,18 +461,14 @@ class ConsoleNotifier:
         self.total_existing_lots += existing_lots
         self.total_today += fetched
         self.new_today += new_lots
-        self.add_event(
-            f"{profile_name}: получено лотов {fetched}",
-            refresh=False,
-        )
         if new_lots:
             self.add_event(
                 f"{profile_name}: новых лотов {new_lots}",
                 refresh=False,
             )
-        else:
+        elif fetched != previous_fetched:
             self.add_event(
-                f"{profile_name}: новых лотов нет",
+                f"{profile_name}: найдено лотов {fetched}, новых нет",
                 refresh=False,
             )
         self.refresh()
@@ -488,6 +486,7 @@ class ConsoleNotifier:
                 remaining_time=lot.remaining_time_text or lot.end_time or "-",
                 bids=bids,
                 url=lot.url or "-",
+                rating=lot.rating,
             ),
         )
         self.latest_lots = self.latest_lots[:self.MAX_LOTS]
@@ -590,6 +589,7 @@ class ConsoleNotifier:
                 self._hot_lots_table(),
                 self._ending_lots_table(),
                 self._favorites_table(),
+                *([self._lots_table()] if self.latest_lots else []),
             ]
         )
         return Panel(
@@ -608,39 +608,20 @@ class ConsoleNotifier:
         system_ok = sum(self.system_statuses.values())
         system_total = len(self.system_statuses)
         system_style = "green" if system_ok == system_total else "yellow"
-        metrics = [
+        for _ in range(4):
+            table.add_column(ratio=1)
+        table.add_row(
             self._metric("Статус", self.status, self._status_style(self.status)),
             self._metric("Режим", self._mode_label(), "cyan"),
+            self._metric("Новых сегодня", str(self.new_today), "green"),
+            self._metric("Система", f"{system_ok}/{system_total}", system_style),
+        )
+        table.add_row(
+            self._metric("До скана", f"{self.countdown} сек", "cyan"),
             self._metric("Активный", self._active_profile_name(), "cyan"),
-            self._metric(
-                "До скана",
-                f"{self.countdown} сек",
-                "cyan",
-            ),
-            self._metric(
-                "Новых сегодня",
-                str(self.new_today),
-                "green",
-            ),
-            self._metric(
-                "Лотов в базе",
-                str(self.database_lots_count),
-                "cyan",
-            ),
-            self._metric(
-                "Система",
-                f"{system_ok}/{system_total}",
-                system_style,
-            ),
             self._metric("Успешный запрос", self.last_success, "green"),
-        ]
-        column_count = 4 if self.compact_mode else len(metrics)
-        for _ in range(column_count):
-            table.add_column(ratio=1)
-        for start in range(0, len(metrics), column_count):
-            row = metrics[start : start + column_count]
-            row.extend(Text() for _ in range(column_count - len(row)))
-            table.add_row(*row)
+            self._metric("Лотов в базе", str(self.database_lots_count), "cyan"),
+        )
         return Panel(table, title="ОБЗОР", border_style="blue")
 
     def _system_status_line(self) -> Panel:
@@ -712,30 +693,62 @@ class ConsoleNotifier:
         )
 
     def _lots_table(self) -> Panel:
-        table = Table(expand=True, padding=(0, 1), box=None)
-        table.add_column("ID", style="cyan", no_wrap=True)
-        table.add_column("До", style="bold", no_wrap=True)
-        table.add_column("Цена", justify="right", style="cyan", no_wrap=True)
-        table.add_column("Название", overflow="ellipsis", no_wrap=True)
-        table.add_column("Продавец", overflow="ellipsis", no_wrap=True)
-        table.add_column("Ст", justify="right")
-        table.add_column("URL", no_wrap=True)
+        narrow = self.console.size.width < 100 or self.compact_mode
+        table = Table(
+            expand=True,
+            padding=(0, 1),
+            collapse_padding=True,
+            box=None,
+        )
+        table.add_column("Время", width=8, min_width=5, no_wrap=True)
+        table.add_column("До", width=8, min_width=5, no_wrap=True)
+        table.add_column(
+            "Цена",
+            justify="right",
+            width=10,
+            min_width=7,
+            no_wrap=True,
+        )
+        table.add_column(
+            "Ст.",
+            justify="right",
+            width=5,
+            min_width=3,
+            no_wrap=True,
+        )
+        table.add_column(
+            "Название",
+            ratio=3,
+            min_width=8,
+            overflow="ellipsis",
+            no_wrap=True,
+        )
+        table.add_column(
+            "Продавец (★)",
+            ratio=2,
+            min_width=6,
+            overflow="ellipsis",
+            no_wrap=True,
+        )
+        table.add_column("ID", width=10, min_width=6, no_wrap=True)
 
-        if not self.latest_lots:
-            table.add_row("-", "-", "-", "Новых лотов нет", "-", "-", "-")
-        for lot in sorted(self.latest_lots, key=self._lot_sort_key):
+        for lot in sorted(self.latest_lots, key=self._lot_sort_key)[:3]:
             remaining_style = self._remaining_style(lot.remaining_time)
             table.add_row(
-                lot.lot_id,
+                lot.time,
                 Text(self._short_remaining(lot.remaining_time), style=remaining_style),
-                str(lot.price),
-                self._trim(lot.title, 42),
-                self._trim(lot.seller, 16),
-                lot.bids,
-                Text("Открыть", style=f"link {lot.url} cyan"),
+                self._price_text(lot.price),
+                self._bids_text(lot.bids),
+                self._trim(lot.title, 20 if narrow else 48),
+                self._seller_rating_text(lot),
+                lot.lot_id,
             )
 
-        return Panel(table, title="НОВЫЕ ЛОТЫ", border_style="green")
+        return Panel(
+            table,
+            title="🆕 НОВЫЕ ЛОТЫ · последние 3",
+            border_style="green",
+        )
 
     def _hot_lots_table(self) -> Panel:
         return self._lot_workspace_table(
@@ -886,14 +899,6 @@ class ConsoleNotifier:
         else:
             content = Text()
             for index, event in enumerate(self.events[:self.MAX_EVENTS]):
-                style = (
-                    "reverse"
-                    if (
-                        self.active_panel == "events"
-                        and index == self.selected_event_index
-                    )
-                    else ""
-                )
                 selected = (
                     self.active_panel == "events"
                     and index == self.selected_event_index
@@ -901,7 +906,7 @@ class ConsoleNotifier:
                 marker = "▶" if selected else " "
                 content.append(
                     f"{marker} {self._event_icon(event)} {event}",
-                    style=style,
+                    style=self._event_style(event, selected),
                 )
                 if index < min(len(self.events), self.MAX_EVENTS) - 1:
                     content.append("\n")
@@ -935,25 +940,29 @@ class ConsoleNotifier:
             return (
                 f"[bold]{self.status}[/]  [cyan]{self.countdown} сек[/]"
                 "\n[bold cyan]ПРОФИЛИ[/]  "
-                "P закрыть  ↑↓ выбрать  Enter изменить  "
-                "A добавить  T вкл/выкл  I интервал  "
-                f"D удалить  M режим  S сканировать  Q выход{debug}"
+                "[bold blue]P[/] закрыть  [bold]↑↓[/] выбрать  "
+                "[bold]Enter[/] изменить  [bold green]A[/] добавить  "
+                "[bold yellow]T[/] вкл/выкл  [bold cyan]I[/] интервал  "
+                "[bold red]D[/] удалить  [bold blue]M[/] режим  "
+                f"[bold green]S[/] сканировать  [bold red]Q[/] выход{debug}"
             )
 
         actions = (
-            "K очистить  ↑↓ выбрать событие"
+            "[bold yellow]K[/] очистить  [bold]↑↓[/] выбрать событие"
             if self.active_panel == "events"
             else (
-                "↑↓ выбрать лот  Enter открыть  Z избранное  "
-                "C ссылка  B блок продавца  O сортировка"
+                "[bold]↑↓[/] выбрать лот  [bold]Enter[/] открыть  "
+                "[bold magenta]Z[/] избранное  [bold cyan]C[/] ссылка  "
+                "[bold red]B[/] блок продавца  [bold blue]O[/] сортировка"
             )
         )
         return (
             f"[bold]{self.status}[/]  [cyan]{self.countdown} сек[/]  |  "
-            "[bold cyan]РАЗДЕЛЫ[/]  H/Н HOT  E ENDING  "
-            "F ИЗБРАННОЕ  P ПРОФИЛИ  G СОБЫТИЯ"
+            "[bold cyan]РАЗДЕЛЫ[/]  [bold red]H/Н[/] HOT  "
+            "[bold yellow]E[/] ENDING  [bold magenta]F[/] ИЗБРАННОЕ  "
+            "[bold blue]P[/] ПРОФИЛИ  [bold yellow]G[/] СОБЫТИЯ"
             f"\n[bold cyan]ДЕЙСТВИЯ[/]  {actions}  "
-            f"S сканировать  Q выход{debug}"
+            f"[bold green]S[/] сканировать  [bold red]Q[/] выход{debug}"
         )
 
     @staticmethod
@@ -970,6 +979,23 @@ class ConsoleNotifier:
         if "нов" in normalized or "лот" in normalized:
             return "●"
         return "•"
+
+    @staticmethod
+    def _event_style(event: str, selected: bool = False) -> str:
+        normalized = event.casefold()
+        if "ошиб" in normalized or "error" in normalized:
+            color = "bold red"
+        elif "избран" in normalized:
+            color = "magenta"
+        elif "цен" in normalized:
+            color = "yellow"
+        elif "нов" in normalized:
+            color = "bright_green"
+        elif "сканирован" in normalized:
+            color = "cyan"
+        else:
+            color = "white"
+        return f"reverse {color}" if selected else color
 
     def _keyboard_debug_text(self) -> str:
         if not self.keyboard_debug:
@@ -1222,7 +1248,10 @@ class ConsoleNotifier:
     def _favorite_marker(self, lot: ConsoleEndingLotState) -> str:
         return "★" if lot.url in self.favorite_urls else ""
 
-    def _seller_rating_text(self, lot: ConsoleEndingLotState) -> str:
+    def _seller_rating_text(
+        self,
+        lot: ConsoleEndingLotState | ConsoleLotState,
+    ) -> str:
         seller = self._trim(lot.seller, 18)
         if lot.rating is None:
             return seller
