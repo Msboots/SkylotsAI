@@ -49,6 +49,12 @@ class Notifier(Protocol):
     def set_system_status(self, name: str, ok: bool) -> None:
         ...
 
+    def set_last_success(self, value: str) -> None:
+        ...
+
+    def set_favorites(self, urls: set[str]) -> None:
+        ...
+
     def set_profiles(
         self,
         profiles: Sequence[SearchProfile],
@@ -127,6 +133,15 @@ class Notifier(Protocol):
     def clear_events(self) -> None:
         ...
 
+    def cycle_lot_sort(self) -> None:
+        ...
+
+    def toggle_favorites_filter(self) -> None:
+        ...
+
+    def toggle_compact_mode(self) -> None:
+        ...
+
     def prompt_confirm(self, message: str) -> bool:
         ...
 
@@ -196,6 +211,9 @@ class Monitor:
             "Cookies",
             bool(self.parser.session.cookies),
         )
+        self.notifier.set_favorites(
+            self._read_nonempty_lines(Path("settings/favorites.txt")),
+        )
 
         try:
             while True:
@@ -242,6 +260,10 @@ class Monitor:
             lot.profile_name = profile.name
         self.notifier.set_system_status("Internet", bool(html))
         self.notifier.set_system_status("Parser", bool(lots) or not html)
+        if html:
+            self.notifier.set_last_success(
+                datetime.now().strftime("%H:%M:%S"),
+            )
         self.notifier.update_ending_lots(profile.name, lots)
         summary = ProfileScanSummary(
             profile_id=profile.id,
@@ -400,6 +422,15 @@ class Monitor:
         if normalized == "f":
             if self._is_lot_panel():
                 self._favorite_selected_lot()
+            return "wait"
+        if normalized == "o":
+            self.notifier.cycle_lot_sort()
+            return "wait"
+        if normalized == "v":
+            self.notifier.toggle_favorites_filter()
+            return "wait"
+        if normalized == "x":
+            self.notifier.toggle_compact_mode()
             return "wait"
         if normalized == "m":
             self._toggle_monitor_mode()
@@ -747,6 +778,9 @@ class Monitor:
             return
 
         self._append_unique_line(Path("settings/favorites.txt"), url)
+        self.notifier.set_favorites(
+            self._read_nonempty_lines(Path("settings/favorites.txt")),
+        )
         self.notifier.add_event("Лот добавлен в избранное")
 
     def _save_monitor_settings(self) -> None:
@@ -770,6 +804,16 @@ class Monitor:
 
         with path.open("a", encoding="utf-8") as file:
             file.write(f"{value}\n")
+
+    @staticmethod
+    def _read_nonempty_lines(path: Path) -> set[str]:
+        if not path.exists():
+            return set()
+        return {
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
 
     @staticmethod
     def _copy_to_clipboard(value: str) -> bool:

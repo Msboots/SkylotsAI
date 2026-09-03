@@ -1,5 +1,8 @@
+from io import StringIO
 import unittest
 from unittest.mock import Mock
+
+from rich.console import Console
 
 from skylots_ai.console import (
     ConsoleEndingLotState,
@@ -73,6 +76,59 @@ class ConsoleNotifierNavigationTests(unittest.TestCase):
 
         self.notifier.refresh.assert_called_once_with()
 
+    def test_favorites_filter_keeps_only_starred_lots(self) -> None:
+        self.notifier.set_favorites({self.expensive_lot.url})
+        self.notifier.active_panel = "ending_lots"
+
+        self.notifier.toggle_favorites_filter()
+
+        self.assertIs(self.notifier.selected_lot(), self.expensive_lot)
+
+    def test_sort_mode_changes_lot_order(self) -> None:
+        low_price = self._lot("low-price", 5)
+        low_price.remaining_time = "10 мин"
+        ending_soon = self._lot("ending-soon", 100)
+        ending_soon.remaining_time = "1 мин"
+        self.notifier.ending_lots = {"hot": [low_price, ending_soon]}
+        self.notifier.active_panel = "ending_lots"
+
+        self.assertIs(self.notifier.selected_lot(), ending_soon)
+
+        self.notifier.cycle_lot_sort()
+
+        self.assertIs(self.notifier.selected_lot(), low_price)
+
+    def test_hot_table_shows_favorite_and_reason(self) -> None:
+        self.notifier.compact_mode = False
+        self.notifier.set_favorites({self.cheap_lot.url})
+        output = StringIO()
+        console = Console(
+            file=output,
+            width=160,
+            color_system=None,
+        )
+
+        console.print(self.notifier._hot_lots_table())
+        rendered = output.getvalue()
+
+        self.assertIn("★", rendered)
+        self.assertIn("цена ≤ 20 грн", rendered)
+
+    def test_compact_table_hides_secondary_columns(self) -> None:
+        self.notifier.compact_mode = True
+        output = StringIO()
+        console = Console(
+            file=output,
+            width=80,
+            color_system=None,
+        )
+
+        console.print(self.notifier._ending_lots_table())
+        rendered = output.getvalue()
+
+        self.assertNotIn("Продавец", rendered)
+        self.assertNotIn("Профиль", rendered)
+
 
 class MonitorHotkeyTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -95,6 +151,22 @@ class MonitorHotkeyTests(unittest.TestCase):
 
                 self.assertEqual(action, "wait")
                 self.monitor.notifier.open_selected_lot.assert_called_once_with()
+
+    def test_view_hotkeys_change_sort_filter_and_layout(self) -> None:
+        actions = {
+            "O": "cycle_lot_sort",
+            "V": "toggle_favorites_filter",
+            "X": "toggle_compact_mode",
+        }
+
+        for key, method_name in actions.items():
+            with self.subTest(key=key):
+                self.monitor.notifier.reset_mock()
+
+                action = self.monitor._handle_hotkey(key)
+
+                self.assertEqual(action, "wait")
+                getattr(self.monitor.notifier, method_name).assert_called_once_with()
 
 
 if __name__ == "__main__":

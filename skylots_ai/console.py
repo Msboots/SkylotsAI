@@ -66,6 +66,7 @@ class ConsoleNotifier:
     MAX_LOTS = 10
     MAX_ENDING_LOTS = 10
     MAX_EVENTS = 5
+    SORT_MODES = ("ending", "price", "title")
     LOT_PANELS = ("hot_lots", "ending_lots")
     PANELS = (*LOT_PANELS, "profiles", "events")
 
@@ -94,6 +95,11 @@ class ConsoleNotifier:
         self.today = date.today()
         self.keyboard_debug = False
         self.last_key = "-"
+        self.last_success = "-"
+        self.favorite_urls: set[str] = set()
+        self.favorites_only = False
+        self.sort_mode = "ending"
+        self.compact_mode = self.console.size.width < 120
         self.system_statuses: dict[str, bool] = {
             "Internet": True,
             "Cookies": True,
@@ -164,6 +170,36 @@ class ConsoleNotifier:
     def set_system_status(self, name: str, ok: bool) -> None:
         self.system_statuses[name] = ok
         self.refresh()
+
+    def set_last_success(self, value: str) -> None:
+        self.last_success = value
+        self.refresh()
+
+    def set_favorites(self, urls: set[str]) -> None:
+        self.favorite_urls = set(urls)
+        self._clamp_selection()
+        self.refresh()
+
+    def cycle_lot_sort(self) -> None:
+        current_index = self.SORT_MODES.index(self.sort_mode)
+        self.sort_mode = self.SORT_MODES[
+            (current_index + 1) % len(self.SORT_MODES)
+        ]
+        self.selected_lot_index = 0
+        self.add_event(f"Сортировка: {self._sort_mode_label()}")
+
+    def toggle_favorites_filter(self) -> None:
+        self.favorites_only = not self.favorites_only
+        self.selected_lot_index = 0
+        label = (
+            "только избранные" if self.favorites_only else "все лоты"
+        )
+        self.add_event(f"Фильтр: {label}")
+
+    def toggle_compact_mode(self) -> None:
+        self.compact_mode = not self.compact_mode
+        label = "включён" if self.compact_mode else "выключен"
+        self.add_event(f"Компактный режим {label}")
 
     def set_profiles(
         self,
@@ -535,17 +571,10 @@ class ConsoleNotifier:
 
     def _header_table(self) -> Table:
         table = Table.grid(expand=True)
-        table.add_column(ratio=1)
-        table.add_column(ratio=1)
-        table.add_column(ratio=1)
-        table.add_column(ratio=1)
-        table.add_column(ratio=1)
-        table.add_column(ratio=1)
-        table.add_column(ratio=1)
         system_ok = sum(self.system_statuses.values())
         system_total = len(self.system_statuses)
         system_style = "green" if system_ok == system_total else "yellow"
-        table.add_row(
+        metrics = [
             self._metric("Статус", self.status, self._status_style(self.status)),
             self._metric("Режим", self._mode_label(), "cyan"),
             self._metric("Активный", self._active_profile_name(), "cyan"),
@@ -569,7 +598,15 @@ class ConsoleNotifier:
                 f"{system_ok}/{system_total}",
                 system_style,
             ),
-        )
+            self._metric("Успешный запрос", self.last_success, "green"),
+        ]
+        column_count = 4 if self.compact_mode else len(metrics)
+        for _ in range(column_count):
+            table.add_column(ratio=1)
+        for start in range(0, len(metrics), column_count):
+            row = metrics[start : start + column_count]
+            row.extend(Text() for _ in range(column_count - len(row)))
+            table.add_row(*row)
         return Panel(table, title="ОБЗОР", border_style="blue")
 
     def _system_status_line(self) -> Panel:
@@ -668,19 +705,26 @@ class ConsoleNotifier:
 
     def _hot_lots_table(self) -> Panel:
         table = Table(expand=True, padding=(0, 1), box=None)
+        table.add_column("★", style="yellow", no_wrap=True)
         table.add_column("ID", style="cyan", no_wrap=True)
         table.add_column("Осталось", style="bold", no_wrap=True)
         table.add_column("Цена", justify="right", no_wrap=True)
-        table.add_column("Ставок", justify="right")
+        if not self.compact_mode:
+            table.add_column("Ставок", justify="right")
         table.add_column("Название", overflow="ellipsis", no_wrap=True)
-        table.add_column("Продавец", overflow="ellipsis", no_wrap=True)
-        table.add_column("Профиль", overflow="ellipsis", no_wrap=True)
+        if not self.compact_mode:
+            table.add_column("Продавец", overflow="ellipsis", no_wrap=True)
+            table.add_column("Профиль", overflow="ellipsis", no_wrap=True)
+            table.add_column("Почему HOT", overflow="ellipsis", no_wrap=True)
 
         hot_lots = self._hot_lots()
         self._clamp_selection()
 
         if not hot_lots:
-            table.add_row("-", "-", "-", "-", "Подходящих лотов нет", "-", "-")
+            empty_row = ["-", "-", "-", "-", "Подходящих лотов нет"]
+            if not self.compact_mode:
+                empty_row.extend(("-", "-", "-", "-"))
+            table.add_row(*empty_row)
 
         for index, lot in enumerate(hot_lots):
             selected = (
@@ -688,38 +732,55 @@ class ConsoleNotifier:
                 and index == self.selected_lot_index
             )
             row_style = "reverse" if selected else None
-            table.add_row(
+            row: list[str | Text] = [
+                self._favorite_marker(lot),
                 lot.lot_id,
                 Text(
                     self._short_remaining(lot.remaining_time),
                     style=self._ending_remaining_style(lot.remaining_time),
                 ),
                 self._price_text(lot.price),
-                self._bids_text(lot.bids),
-                self._trim(lot.title, 34),
-                self._trim(lot.seller, 14),
-                self._trim(lot.profile_name, 14),
-                style=row_style,
-            )
+            ]
+            if not self.compact_mode:
+                row.append(self._bids_text(lot.bids))
+            row.append(self._trim(lot.title, 24 if self.compact_mode else 34))
+            if not self.compact_mode:
+                row.extend(
+                    (
+                        self._trim(lot.seller, 14),
+                        self._trim(lot.profile_name, 14),
+                        self._hot_reason(lot),
+                    ),
+                )
+            table.add_row(*row, style=row_style)
 
         return Panel(
             table,
-            title=self._panel_title("hot_lots", "🔥 HOT LOTS"),
+            title=self._panel_title(
+                "hot_lots",
+                f"🔥 HOT LOTS{self._lot_view_suffix()}",
+            ),
             border_style="red",
         )
 
     def _ending_lots_table(self) -> Panel:
         table = Table(expand=True, padding=(0, 1), box=None)
+        table.add_column("★", style="yellow", no_wrap=True)
         table.add_column("Осталось", style="bold", no_wrap=True)
         table.add_column("Цена", justify="right", style="cyan", no_wrap=True)
-        table.add_column("Ставок", justify="right")
+        if not self.compact_mode:
+            table.add_column("Ставок", justify="right")
         table.add_column("Название", overflow="ellipsis", no_wrap=True)
-        table.add_column("Продавец", overflow="ellipsis", no_wrap=True)
-        table.add_column("Профиль", overflow="ellipsis", no_wrap=True)
+        if not self.compact_mode:
+            table.add_column("Продавец", overflow="ellipsis", no_wrap=True)
+            table.add_column("Профиль", overflow="ellipsis", no_wrap=True)
 
         ending_lots = self._visible_ending_lots()
         if not ending_lots:
-            table.add_row("-", "-", "-", "Лотов нет", "-", "-")
+            empty_row = ["-", "-", "-", "Лотов нет"]
+            if not self.compact_mode:
+                empty_row.extend(("-", "-", "-"))
+            table.add_row(*empty_row)
 
         for index, lot in enumerate(ending_lots):
             remaining_style = self._ending_remaining_style(lot.remaining_time)
@@ -728,19 +789,29 @@ class ConsoleNotifier:
                 and index == self.selected_lot_index
             )
             row_style = "reverse" if selected else None
-            table.add_row(
+            row: list[str | Text] = [
+                self._favorite_marker(lot),
                 Text(self._short_remaining(lot.remaining_time), style=remaining_style),
                 self._price_text(lot.price),
-                self._bids_text(lot.bids),
-                self._trim(lot.title, 34),
-                self._trim(lot.seller, 14),
-                self._trim(lot.profile_name, 14),
-                style=row_style,
-            )
+            ]
+            if not self.compact_mode:
+                row.append(self._bids_text(lot.bids))
+            row.append(self._trim(lot.title, 24 if self.compact_mode else 34))
+            if not self.compact_mode:
+                row.extend(
+                    (
+                        self._trim(lot.seller, 14),
+                        self._trim(lot.profile_name, 14),
+                    ),
+                )
+            table.add_row(*row, style=row_style)
 
         return Panel(
             table,
-            title=self._panel_title("ending_lots", "⏳ ENDING SOON"),
+            title=self._panel_title(
+                "ending_lots",
+                f"⏳ ENDING SOON{self._lot_view_suffix()}",
+            ),
             border_style="yellow",
         )
 
@@ -799,7 +870,7 @@ class ConsoleNotifier:
             return (
                 f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
                 "TAB панель | A добавить профиль | S сканировать | "
-                f"R обновить | Q выход{debug}"
+                f"O сортировка | V только ★ | X компактно | Q выход{debug}"
             )
 
         if self.active_panel in self.LOT_PANELS:
@@ -807,6 +878,7 @@ class ConsoleNotifier:
                 f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
                 "ENTER открыть лот | ↑↓ выбрать | TAB панель | "
                 "B продавца в чёрный список | F в избранное | "
+                "O сортировка | V только ★ | X компактно | "
                 f"C копировать ссылку | Q выход{debug}"
             )
         if self.active_panel == "profiles":
@@ -1012,13 +1084,6 @@ class ConsoleNotifier:
             minutes = 10_000
         return minutes, lot.time
 
-    @staticmethod
-    def _ending_lot_sort_key(lot: ConsoleEndingLotState) -> tuple[int, str]:
-        seconds = ConsoleNotifier.parse_remaining_seconds(lot.remaining_time)
-        if seconds is None:
-            seconds = 10_000_000
-        return seconds, lot.title
-
     def _hot_lots(self) -> list[ConsoleEndingLotState]:
         hot_lots = []
         for lot in self._visible_ending_lots(limit=None):
@@ -1028,7 +1093,7 @@ class ConsoleNotifier:
             if lot.price <= profile.max_price:
                 hot_lots.append(lot)
 
-        return sorted(hot_lots, key=self._hot_lot_sort_key)[:self.MAX_LOTS]
+        return sorted(hot_lots, key=self._lot_view_sort_key)[:self.MAX_LOTS]
 
     def _selectable_lots(self) -> list[ConsoleEndingLotState]:
         if self.active_panel == "hot_lots":
@@ -1036,13 +1101,6 @@ class ConsoleNotifier:
         if self.active_panel == "ending_lots":
             return self._visible_ending_lots()
         return []
-
-    @staticmethod
-    def _hot_lot_sort_key(lot: ConsoleEndingLotState) -> tuple[int, int, str]:
-        seconds = ConsoleNotifier.parse_remaining_seconds(lot.remaining_time)
-        if seconds is None:
-            seconds = 10_000_000
-        return seconds, lot.price, lot.title
 
     def _visible_ending_lots(
         self,
@@ -1053,10 +1111,51 @@ class ConsoleNotifier:
         for profile_id in visible_profile_ids:
             lots.extend(self.ending_lots.get(profile_id, []))
 
-        sorted_lots = sorted(lots, key=self._ending_lot_sort_key)
+        if self.favorites_only:
+            lots = [lot for lot in lots if lot.url in self.favorite_urls]
+
+        sorted_lots = sorted(lots, key=self._lot_view_sort_key)
         if limit is None:
             return sorted_lots
         return sorted_lots[:limit]
+
+    def _lot_view_sort_key(
+        self,
+        lot: ConsoleEndingLotState,
+    ) -> tuple[int, int, str]:
+        seconds = self.parse_remaining_seconds(lot.remaining_time)
+        if seconds is None:
+            seconds = 10_000_000
+        if self.sort_mode == "price":
+            return lot.price, seconds, lot.title.casefold()
+        if self.sort_mode == "title":
+            return 0, 0, lot.title.casefold()
+        return seconds, lot.price, lot.title.casefold()
+
+    def _favorite_marker(self, lot: ConsoleEndingLotState) -> str:
+        return "★" if lot.url in self.favorite_urls else ""
+
+    def _hot_reason(self, lot: ConsoleEndingLotState) -> str:
+        profile = self.profiles.get(lot.profile_id)
+        if profile is None:
+            return "-"
+        return f"цена ≤ {profile.max_price} грн"
+
+    def _lot_view_suffix(self) -> str:
+        favorite_label = " · только ★" if self.favorites_only else ""
+        compact_label = " · компактно" if self.compact_mode else ""
+        return (
+            f" · {self._sort_mode_label()}"
+            f"{favorite_label}{compact_label}"
+        )
+
+    def _sort_mode_label(self) -> str:
+        labels = {
+            "ending": "по времени",
+            "price": "по цене",
+            "title": "по названию",
+        }
+        return labels[self.sort_mode]
 
     def _visible_profile_ids(self) -> list[str]:
         if self.monitor_mode == "single":
