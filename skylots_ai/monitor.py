@@ -399,6 +399,21 @@ class Monitor:
             elif self._is_lot_panel():
                 self.notifier.open_selected_lot()
             return "wait"
+        if normalized in {"h", "н"}:
+            self.notifier.show_panel("hot_lots")
+            return "wait"
+        if normalized == "e":
+            self.notifier.show_panel("ending_lots")
+            return "wait"
+        if normalized == "f":
+            self.notifier.show_panel("favorites")
+            return "wait"
+        if normalized == "p":
+            self.notifier.toggle_profiles_panel()
+            return "wait"
+        if normalized == "g":
+            self.notifier.show_panel("events")
+            return "wait"
         if normalized == "a":
             self._add_profile_from_dashboard()
             return "wait"
@@ -407,19 +422,20 @@ class Monitor:
                 self._blacklist_selected_seller()
             return "wait"
         if normalized == "c":
-            if self.notifier.current_panel() == "events":
-                self.notifier.clear_events()
-            elif self._is_lot_panel():
+            if self._is_lot_panel():
                 self._copy_selected_lot_url()
+            return "wait"
+        if normalized == "k":
+            self.notifier.clear_events()
             return "wait"
         if normalized == "d":
             if self.notifier.current_panel() == "profiles":
                 self._delete_selected_profile()
             return "wait"
-        if normalized == "e":
+        if normalized == "t":
             self._toggle_active_profile()
             return "wait"
-        if normalized == "f":
+        if normalized == "z":
             if self._is_lot_panel():
                 self._favorite_selected_lot()
             return "wait"
@@ -437,9 +453,6 @@ class Monitor:
             return "wait"
         if normalized == "n":
             self._select_relative_profile(1)
-            return "wait"
-        if normalized == "p":
-            self._select_relative_profile(-1)
             return "wait"
         if normalized == "i":
             self._change_active_profile_interval()
@@ -468,7 +481,11 @@ class Monitor:
         return "wait"
 
     def _is_lot_panel(self) -> bool:
-        return self.notifier.current_panel() in {"hot_lots", "ending_lots"}
+        return self.notifier.current_panel() in {
+            "hot_lots",
+            "ending_lots",
+            "favorites",
+        }
 
     def _add_profile_from_dashboard(self) -> None:
         name, url, interval = self.notifier.prompt_new_profile(
@@ -777,11 +794,18 @@ class Monitor:
             self.notifier.add_event("У выбранного лота нет ссылки")
             return
 
-        self._append_unique_line(Path("settings/favorites.txt"), url)
-        self.notifier.set_favorites(
-            self._read_nonempty_lines(Path("settings/favorites.txt")),
-        )
-        self.notifier.add_event("Лот добавлен в избранное")
+        favorites_path = Path("settings/favorites.txt")
+        favorites = self._read_nonempty_lines(favorites_path)
+        if url in favorites:
+            favorites.remove(url)
+            message = "Лот удалён из избранного"
+        else:
+            favorites.add(url)
+            message = "Лот добавлен в избранное"
+
+        self._write_lines(favorites_path, favorites)
+        self.notifier.set_favorites(favorites)
+        self.notifier.add_event(message)
 
     def _save_monitor_settings(self) -> None:
         self.config.monitor_mode = self.monitor_mode
@@ -814,6 +838,12 @@ class Monitor:
             for line in path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         }
+
+    @staticmethod
+    def _write_lines(path: Path, values: set[str]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = "".join(f"{value}\n" for value in sorted(values))
+        path.write_text(content, encoding="utf-8")
 
     @staticmethod
     def _copy_to_clipboard(value: str) -> bool:

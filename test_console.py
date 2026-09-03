@@ -1,6 +1,6 @@
 from io import StringIO
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from rich.console import Console
 
@@ -43,14 +43,15 @@ class ConsoleNotifierNavigationTests(unittest.TestCase):
             url=f"https://example.test/{lot_id}",
         )
 
-    def test_tab_visits_both_lot_panels(self) -> None:
+    def test_tab_visits_workspaces_without_opening_profiles(self) -> None:
         self.assertEqual(self.notifier.current_panel(), "hot_lots")
 
         self.notifier.select_next_panel()
         self.assertEqual(self.notifier.current_panel(), "ending_lots")
 
         self.notifier.select_next_panel()
-        self.assertEqual(self.notifier.current_panel(), "profiles")
+        self.assertEqual(self.notifier.current_panel(), "favorites")
+        self.assertFalse(self.notifier.profiles_expanded)
 
     def test_previous_panel_moves_backwards(self) -> None:
         self.notifier.select_previous_panel()
@@ -125,8 +126,9 @@ class ConsoleNotifierNavigationTests(unittest.TestCase):
         lots = self.notifier.ending_lots["hot"]
         self.assertEqual([lot.lot_id for lot in lots], ["sooner", "later"])
 
-    def test_hot_table_shows_favorite_and_reason(self) -> None:
+    def test_lot_table_uses_requested_columns_without_profile(self) -> None:
         self.notifier.compact_mode = False
+        self.cheap_lot.rating = 42.0
         self.notifier.set_favorites({self.cheap_lot.url})
         output = StringIO()
         console = Console(
@@ -139,9 +141,12 @@ class ConsoleNotifierNavigationTests(unittest.TestCase):
         rendered = output.getvalue()
 
         self.assertIn("★", rendered)
-        self.assertIn("цена ≤ 20 грн", rendered)
+        self.assertIn("Продавец (Рейтинг)", rendered)
+        self.assertIn("seller (42)", rendered)
+        self.assertNotIn("Профиль", rendered)
+        self.assertNotIn("Почему HOT", rendered)
 
-    def test_compact_table_hides_secondary_columns(self) -> None:
+    def test_compact_table_keeps_requested_columns(self) -> None:
         self.notifier.compact_mode = True
         output = StringIO()
         console = Console(
@@ -153,8 +158,34 @@ class ConsoleNotifierNavigationTests(unittest.TestCase):
         console.print(self.notifier._ending_lots_table())
         rendered = output.getvalue()
 
-        self.assertNotIn("Продавец", rendered)
+        self.assertIn("Продавец", rendered)
+        self.assertIn("Ставок", rendered)
         self.assertNotIn("Профиль", rendered)
+
+    def test_favorites_workspace_contains_starred_lots(self) -> None:
+        self.notifier.set_favorites({self.expensive_lot.url})
+        self.notifier.show_panel("favorites")
+
+        self.assertIs(self.notifier.selected_lot(), self.expensive_lot)
+
+    def test_profiles_are_hidden_until_toggled(self) -> None:
+        output = StringIO()
+        console = Console(file=output, width=160, color_system=None)
+        console.print(self.notifier.render())
+        hidden_render = output.getvalue()
+
+        self.notifier.toggle_profiles_panel()
+        output = StringIO()
+        console = Console(file=output, width=160, color_system=None)
+        console.print(self.notifier.render())
+        shown_render = output.getvalue()
+
+        self.assertNotIn("ПРОФИЛИ", hidden_render)
+        self.assertIn("ПРОФИЛИ", shown_render)
+        self.assertEqual(self.notifier.current_panel(), "profiles")
+
+        self.notifier.toggle_profiles_panel()
+        self.assertEqual(self.notifier.current_panel(), "hot_lots")
 
 
 class MonitorHotkeyTests(unittest.TestCase):
@@ -169,7 +200,7 @@ class MonitorHotkeyTests(unittest.TestCase):
         self.monitor.notifier.select_previous_panel.assert_called_once_with()
 
     def test_enter_opens_lot_from_each_lot_panel(self) -> None:
-        for panel in ("hot_lots", "ending_lots"):
+        for panel in ("hot_lots", "ending_lots", "favorites"):
             with self.subTest(panel=panel):
                 self.monitor.notifier.reset_mock()
                 self.monitor.notifier.current_panel.return_value = panel
@@ -194,6 +225,39 @@ class MonitorHotkeyTests(unittest.TestCase):
 
                 self.assertEqual(action, "wait")
                 getattr(self.monitor.notifier, method_name).assert_called_once_with()
+
+    def test_workspace_hotkeys_have_one_destination(self) -> None:
+        destinations = {
+            "H": "hot_lots",
+            "Н": "hot_lots",
+            "E": "ending_lots",
+            "F": "favorites",
+            "G": "events",
+        }
+
+        for key, panel in destinations.items():
+            with self.subTest(key=key):
+                self.monitor.notifier.reset_mock()
+
+                action = self.monitor._handle_hotkey(key)
+
+                self.assertEqual(action, "wait")
+                self.monitor.notifier.show_panel.assert_called_once_with(panel)
+
+    def test_profiles_hotkey_toggles_expanded_menu(self) -> None:
+        action = self.monitor._handle_hotkey("P")
+
+        self.assertEqual(action, "wait")
+        self.monitor.notifier.toggle_profiles_panel.assert_called_once_with()
+
+    def test_favorite_action_has_its_own_hotkey(self) -> None:
+        self.monitor.notifier.current_panel.return_value = "hot_lots"
+
+        with patch.object(self.monitor, "_favorite_selected_lot") as favorite:
+            action = self.monitor._handle_hotkey("Z")
+
+        self.assertEqual(action, "wait")
+        favorite.assert_called_once_with()
 
 
 if __name__ == "__main__":

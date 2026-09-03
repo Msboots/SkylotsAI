@@ -56,6 +56,7 @@ class ConsoleEndingLotState:
     remaining_time: str
     bids: str
     url: str
+    rating: float | None = None
 
 
 class ConsoleNotifier:
@@ -67,8 +68,8 @@ class ConsoleNotifier:
     MAX_ENDING_LOTS = 10
     MAX_EVENTS = 5
     SORT_MODES = ("ending", "price", "title")
-    LOT_PANELS = ("hot_lots", "ending_lots")
-    PANELS = (*LOT_PANELS, "profiles", "events")
+    LOT_PANELS = ("hot_lots", "ending_lots", "favorites")
+    PANELS = (*LOT_PANELS, "events")
 
     def __init__(self, live_enabled: bool = True) -> None:
         self.console = Console()
@@ -82,6 +83,8 @@ class ConsoleNotifier:
         self.latest_lots: list[ConsoleLotState] = []
         self.ending_lots: dict[str, list[ConsoleEndingLotState]] = {}
         self.active_panel = "hot_lots"
+        self.workspace_panel = "hot_lots"
+        self.profiles_expanded = False
         self.selected_lot_index = 0
         self.selected_event_index = 0
         self.events: list[str] = []
@@ -242,10 +245,33 @@ class ConsoleNotifier:
         self._select_relative_panel(-1)
 
     def _select_relative_panel(self, step: int) -> None:
-        current_index = self.PANELS.index(self.active_panel)
-        self.active_panel = self.PANELS[
+        current_panel = (
+            self.workspace_panel
+            if self.active_panel == "profiles"
+            else self.active_panel
+        )
+        current_index = self.PANELS.index(current_panel)
+        panel = self.PANELS[
             (current_index + step) % len(self.PANELS)
         ]
+        self.show_panel(panel)
+
+    def show_panel(self, panel: str) -> None:
+        if panel not in self.PANELS:
+            return
+        self.active_panel = panel
+        self.profiles_expanded = False
+        if panel in self.LOT_PANELS:
+            self.workspace_panel = panel
+            self.selected_lot_index = 0
+        self._clamp_selection()
+        self.refresh()
+
+    def toggle_profiles_panel(self) -> None:
+        self.profiles_expanded = not self.profiles_expanded
+        self.active_panel = (
+            "profiles" if self.profiles_expanded else self.workspace_panel
+        )
         self._clamp_selection()
         self.refresh()
 
@@ -498,6 +524,7 @@ class ConsoleNotifier:
                     remaining_time=lot.remaining_time_text or lot.end_time or "-",
                     bids=bids,
                     url=lot.url or "-",
+                    rating=lot.rating,
                 ),
             )
 
@@ -556,12 +583,15 @@ class ConsoleNotifier:
             self.live.update(self.render())
 
     def render(self) -> Panel:
+        workspace = (
+            self._profiles_table()
+            if self.profiles_expanded
+            else self._workspace_table()
+        )
         return Panel(
             Group(
                 self._header_table(),
-                self._hot_lots_table(),
-                self._ending_lots_table(),
-                self._profiles_table(),
+                workspace,
                 self._events_panel(),
                 self._status_bar(),
             ),
@@ -704,115 +734,89 @@ class ConsoleNotifier:
         return Panel(table, title="НОВЫЕ ЛОТЫ", border_style="green")
 
     def _hot_lots_table(self) -> Panel:
+        return self._lot_workspace_table(
+            lots=self._hot_lots(),
+            panel="hot_lots",
+            title=f"🔥 HOT LOTS{self._lot_view_suffix()}",
+            empty_message="Подходящих лотов нет",
+            border_style="red",
+        )
+
+    def _ending_lots_table(self) -> Panel:
+        return self._lot_workspace_table(
+            lots=self._visible_ending_lots(),
+            panel="ending_lots",
+            title=f"⏳ ENDING SOON{self._lot_view_suffix()}",
+            empty_message="Лотов нет",
+            border_style="yellow",
+        )
+
+    def _favorites_table(self) -> Panel:
+        return self._lot_workspace_table(
+            lots=self._favorite_lots(),
+            panel="favorites",
+            title=f"★ ИЗБРАННОЕ{self._lot_view_suffix()}",
+            empty_message="Избранных лотов нет",
+            border_style="magenta",
+        )
+
+    def _workspace_table(self) -> Panel:
+        tables = {
+            "hot_lots": self._hot_lots_table,
+            "ending_lots": self._ending_lots_table,
+            "favorites": self._favorites_table,
+        }
+        return tables[self.workspace_panel]()
+
+    def _lot_workspace_table(
+        self,
+        lots: Sequence[ConsoleEndingLotState],
+        panel: str,
+        title: str,
+        empty_message: str,
+        border_style: str,
+    ) -> Panel:
         table = Table(expand=True, padding=(0, 1), box=None)
         table.add_column("★", style="yellow", no_wrap=True)
-        table.add_column("ID", style="cyan", no_wrap=True)
         table.add_column("Осталось", style="bold", no_wrap=True)
         table.add_column("Цена", justify="right", no_wrap=True)
-        if not self.compact_mode:
-            table.add_column("Ставок", justify="right")
+        table.add_column("Ставок", justify="right")
         table.add_column("Название", overflow="ellipsis", no_wrap=True)
-        if not self.compact_mode:
-            table.add_column("Продавец", overflow="ellipsis", no_wrap=True)
-            table.add_column("Профиль", overflow="ellipsis", no_wrap=True)
-            table.add_column("Почему HOT", overflow="ellipsis", no_wrap=True)
-
-        hot_lots = self._hot_lots()
+        table.add_column(
+            "Продавец (Рейтинг)",
+            overflow="ellipsis",
+            no_wrap=True,
+        )
+        table.add_column("ID", style="cyan", no_wrap=True)
         self._clamp_selection()
 
-        if not hot_lots:
-            empty_row = ["-", "-", "-", "-", "Подходящих лотов нет"]
-            if not self.compact_mode:
-                empty_row.extend(("-", "-", "-", "-"))
-            table.add_row(*empty_row)
+        if not lots:
+            table.add_row("-", "-", "-", "-", empty_message, "-", "-")
 
-        for index, lot in enumerate(hot_lots):
+        for index, lot in enumerate(lots):
             selected = (
-                self.active_panel == "hot_lots"
+                self.active_panel == panel
                 and index == self.selected_lot_index
             )
             row_style = "reverse" if selected else None
             row: list[str | Text] = [
                 self._favorite_marker(lot),
-                lot.lot_id,
                 Text(
                     self._short_remaining(lot.remaining_time),
                     style=self._ending_remaining_style(lot.remaining_time),
                 ),
                 self._price_text(lot.price),
+                self._bids_text(lot.bids),
+                self._trim(lot.title, 28 if self.compact_mode else 48),
+                self._seller_rating_text(lot),
+                lot.lot_id,
             ]
-            if not self.compact_mode:
-                row.append(self._bids_text(lot.bids))
-            row.append(self._trim(lot.title, 24 if self.compact_mode else 34))
-            if not self.compact_mode:
-                row.extend(
-                    (
-                        self._trim(lot.seller, 14),
-                        self._trim(lot.profile_name, 14),
-                        self._hot_reason(lot),
-                    ),
-                )
             table.add_row(*row, style=row_style)
 
         return Panel(
             table,
-            title=self._panel_title(
-                "hot_lots",
-                f"🔥 HOT LOTS{self._lot_view_suffix()}",
-            ),
-            border_style="red",
-        )
-
-    def _ending_lots_table(self) -> Panel:
-        table = Table(expand=True, padding=(0, 1), box=None)
-        table.add_column("★", style="yellow", no_wrap=True)
-        table.add_column("Осталось", style="bold", no_wrap=True)
-        table.add_column("Цена", justify="right", style="cyan", no_wrap=True)
-        if not self.compact_mode:
-            table.add_column("Ставок", justify="right")
-        table.add_column("Название", overflow="ellipsis", no_wrap=True)
-        if not self.compact_mode:
-            table.add_column("Продавец", overflow="ellipsis", no_wrap=True)
-            table.add_column("Профиль", overflow="ellipsis", no_wrap=True)
-
-        ending_lots = self._visible_ending_lots()
-        if not ending_lots:
-            empty_row = ["-", "-", "-", "Лотов нет"]
-            if not self.compact_mode:
-                empty_row.extend(("-", "-", "-"))
-            table.add_row(*empty_row)
-
-        for index, lot in enumerate(ending_lots):
-            remaining_style = self._ending_remaining_style(lot.remaining_time)
-            selected = (
-                self.active_panel == "ending_lots"
-                and index == self.selected_lot_index
-            )
-            row_style = "reverse" if selected else None
-            row: list[str | Text] = [
-                self._favorite_marker(lot),
-                Text(self._short_remaining(lot.remaining_time), style=remaining_style),
-                self._price_text(lot.price),
-            ]
-            if not self.compact_mode:
-                row.append(self._bids_text(lot.bids))
-            row.append(self._trim(lot.title, 24 if self.compact_mode else 34))
-            if not self.compact_mode:
-                row.extend(
-                    (
-                        self._trim(lot.seller, 14),
-                        self._trim(lot.profile_name, 14),
-                    ),
-                )
-            table.add_row(*row, style=row_style)
-
-        return Panel(
-            table,
-            title=self._panel_title(
-                "ending_lots",
-                f"⏳ ENDING SOON{self._lot_view_suffix()}",
-            ),
-            border_style="yellow",
+            title=self._panel_title(panel, title),
+            border_style=border_style,
         )
 
     def _stats_line(self) -> Panel:
@@ -866,35 +870,32 @@ class ConsoleNotifier:
 
     def _context_menu(self) -> str:
         debug = self._keyboard_debug_text()
-        if not self._has_active_item():
-            return (
-                f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
-                "TAB панель | A добавить профиль | S сканировать | "
-                f"O сортировка | V только ★ | X компактно | Q выход{debug}"
-            )
-
         if self.active_panel in self.LOT_PANELS:
             return (
                 f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
-                "ENTER открыть лот | ↑↓ выбрать | TAB панель | "
-                "B продавца в чёрный список | F в избранное | "
-                "O сортировка | V только ★ | X компактно | "
-                f"C копировать ссылку | Q выход{debug}"
+                "H/Н горячие | E завершаются | F избранное | P профили | "
+                "G события | S сканировать | ↑↓ выбрать | ENTER открыть | "
+                "Z ★ | C ссылка | B чёрный список | O сортировка | "
+                f"X компактно | Q выход{debug}"
             )
         if self.active_panel == "profiles":
             return (
                 f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
-                "ENTER изменить | A добавить | E вкл/выкл | I интервал | "
-                "D удалить | M режим все/один | N/P профиль | "
-                f"TAB панель | Q выход{debug}"
+                "P закрыть профили | ↑↓ выбрать | ENTER изменить | "
+                "A добавить | T вкл/выкл | I интервал | D удалить | "
+                f"M режим все/один | S сканировать | Q выход{debug}"
             )
         if self.active_panel == "events":
             return (
                 f"[bold]{self.status}[/] | [cyan]{self.countdown} сек[/] | "
-                f"C очистить события | TAB панель | Q выход{debug}"
+                "H/Н горячие | E завершаются | F избранное | P профили | "
+                f"K очистить события | S сканировать | Q выход{debug}"
             )
 
-        return f"[bold]{self.status}[/] | TAB панель | Q выход{debug}"
+        return (
+            f"[bold]{self.status}[/] | H/Н горячие | E завершаются | "
+            f"F избранное | P профили | Q выход{debug}"
+        )
 
     def _keyboard_debug_text(self) -> str:
         if not self.keyboard_debug:
@@ -1100,7 +1101,19 @@ class ConsoleNotifier:
             return self._hot_lots()
         if self.active_panel == "ending_lots":
             return self._visible_ending_lots()
+        if self.active_panel == "favorites":
+            return self._favorite_lots()
         return []
+
+    def _favorite_lots(self) -> list[ConsoleEndingLotState]:
+        lots_by_url: dict[str, ConsoleEndingLotState] = {}
+        for profile_lots in self.ending_lots.values():
+            for lot in profile_lots:
+                if lot.url in self.favorite_urls:
+                    lots_by_url[lot.url] = lot
+        return sorted(lots_by_url.values(), key=self._lot_view_sort_key)[
+            :self.MAX_ENDING_LOTS
+        ]
 
     def _visible_ending_lots(
         self,
@@ -1134,6 +1147,13 @@ class ConsoleNotifier:
 
     def _favorite_marker(self, lot: ConsoleEndingLotState) -> str:
         return "★" if lot.url in self.favorite_urls else ""
+
+    def _seller_rating_text(self, lot: ConsoleEndingLotState) -> str:
+        seller = self._trim(lot.seller, 18)
+        if lot.rating is None:
+            return seller
+        rating = f"{lot.rating:g}"
+        return f"{seller} ({rating})"
 
     def _hot_reason(self, lot: ConsoleEndingLotState) -> str:
         profile = self.profiles.get(lot.profile_id)
