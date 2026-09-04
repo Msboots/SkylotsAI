@@ -50,6 +50,17 @@ class PriceHistory:
     id: int | None = None
 
 
+@dataclass(frozen=True)
+class PriceChange:
+    lot: Lot
+    previous_price: int
+    current_price: int
+
+    @property
+    def decreased(self) -> bool:
+        return self.current_price < self.previous_price
+
+
 @dataclass
 class Notification:
     lot_id: str

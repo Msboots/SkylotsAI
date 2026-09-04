@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from pathlib import Path
 import sqlite3
 
-from skylots_ai.models import Lot
+from skylots_ai.models import Lot, PriceChange, PriceHistory
 
 
 class Database:
@@ -231,17 +231,31 @@ class Database:
         self,
         lots: Sequence[Lot],
         seen_at: str,
-    ) -> tuple[list[Lot], int]:
+    ) -> tuple[list[Lot], list[PriceChange], int]:
         unique_lots = list({lot.id: lot for lot in lots}.values())
         conn = self.connect()
 
         try:
             cur = conn.cursor()
-            existing_ids = self._get_existing_lot_ids(
+            existing_prices = self._get_existing_lot_prices(
                 cur,
                 [lot.id for lot in unique_lots],
             )
-            new_lots = [lot for lot in unique_lots if lot.id not in existing_ids]
+            new_lots = [
+                lot for lot in unique_lots if lot.id not in existing_prices
+            ]
+            price_changes = [
+                PriceChange(
+                    lot=lot,
+                    previous_price=existing_prices[lot.id],
+                    current_price=lot.price,
+                )
+                for lot in unique_lots
+                if (
+                    lot.id in existing_prices
+                    and existing_prices[lot.id] != lot.price
+                )
+            ]
 
             cur.executemany(
                 """
@@ -259,6 +273,13 @@ class Database:
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
+                    title = excluded.title,
+                    seller = excluded.seller,
+                    price = excluded.price,
+                    url = excluded.url,
+                    city = excluded.city,
+                    rating = excluded.rating,
+                    end_time = excluded.end_time,
                     last_seen = excluded.last_seen
                 """,
                 [
@@ -277,10 +298,21 @@ class Database:
                     for lot in unique_lots
                 ],
             )
+            history_lots = new_lots + [change.lot for change in price_changes]
+            cur.executemany(
+                """
+                INSERT INTO history (lot_id, price, checked_at)
+                VALUES (?, ?, ?)
+                """,
+                [
+                    (lot.id, lot.price, seen_at)
+                    for lot in history_lots
+                ],
+            )
             cur.execute("SELECT COUNT(*) FROM lots")
             total_count = int(cur.fetchone()[0])
             conn.commit()
-            return new_lots, total_count
+            return new_lots, price_changes, total_count
         except sqlite3.DatabaseError:
             conn.rollback()
             raise
@@ -305,24 +337,53 @@ class Database:
         conn.close()
         return int(count)
 
+    def get_price_history(self, lot_id: str) -> list[PriceHistory]:
+        conn = self.connect()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, lot_id, price, checked_at
+            FROM history
+            WHERE lot_id = ?
+            ORDER BY id
+            """,
+            (lot_id,),
+        )
+        history = [
+            PriceHistory(
+                id=int(row["id"]),
+                lot_id=str(row["lot_id"]),
+                price=int(row["price"]),
+                checked_at=str(row["checked_at"]),
+            )
+            for row in cur.fetchall()
+        ]
+        conn.close()
+        return history
+
     @staticmethod
-    def _get_existing_lot_ids(
+    def _get_existing_lot_prices(
         cur: sqlite3.Cursor,
         lot_ids: Sequence[str],
-    ) -> set[str]:
-        existing_ids: set[str] = set()
+    ) -> dict[str, int]:
+        existing_prices: dict[str, int] = {}
         batch_size = 900
 
         for start in range(0, len(lot_ids), batch_size):
             batch = lot_ids[start : start + batch_size]
             placeholders = ", ".join("?" for _ in batch)
             cur.execute(
-                f"SELECT id FROM lots WHERE id IN ({placeholders})",
+                f"SELECT id, price FROM lots WHERE id IN ({placeholders})",
                 batch,
             )
-            existing_ids.update(str(row["id"]) for row in cur.fetchall())
+            existing_prices.update(
+                {
+                    str(row["id"]): int(row["price"])
+                    for row in cur.fetchall()
+                },
+            )
 
-        return existing_ids
+        return existing_prices
 
     @staticmethod
     def _row_to_lot(row: sqlite3.Row) -> Lot:

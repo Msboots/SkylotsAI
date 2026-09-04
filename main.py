@@ -1,14 +1,7 @@
-from modules_skylots import get_lots
+"""Совместимая точка входа для старых команд запуска."""
 
-lots = get_lots()
+from app import main
 
-print(f"Получено {len(lots)} лотов\n")
 
-for lot in lots[:10]:
-    print("=" * 60)
-    print(lot["title"])
-    print(lot["price"])
-    print(lot["seller"])
-    print(lot["end"])
-    print(lot["url"])
-
+if __name__ == "__main__":
+    main()

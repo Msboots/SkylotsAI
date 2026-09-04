@@ -18,7 +18,7 @@ from skylots_ai.console import ConsoleNotifier
 from skylots_ai.database import Database
 from skylots_ai.keyboard import KeyEvent, KeyboardReader
 from skylots_ai.logger import LOG_NAME, setup
-from skylots_ai.models import Lot
+from skylots_ai.models import Lot, PriceChange
 from skylots_ai.parser import Parser
 from skylots_ai.profiles import ProfileManager, SearchProfile
 
@@ -47,6 +47,12 @@ class Notifier(Protocol):
         ...
 
     def set_system_status(self, name: str, ok: bool) -> None:
+        ...
+
+    def set_last_success(self, value: str) -> None:
+        ...
+
+    def set_favorites(self, urls: set[str]) -> None:
         ...
 
     def set_profiles(
@@ -91,6 +97,9 @@ class Notifier(Protocol):
     def print_new_lot(self, lot: Lot) -> None:
         ...
 
+    def print_price_change(self, change: PriceChange) -> None:
+        ...
+
     def update_ending_lots(self, profile_name: str, lots: Sequence[Lot]) -> None:
         ...
 
@@ -124,6 +133,15 @@ class Notifier(Protocol):
     def clear_events(self) -> None:
         ...
 
+    def cycle_lot_sort(self) -> None:
+        ...
+
+    def toggle_favorites_filter(self) -> None:
+        ...
+
+    def toggle_compact_mode(self) -> None:
+        ...
+
     def prompt_confirm(self, message: str) -> bool:
         ...
 
@@ -146,6 +164,7 @@ class ProfileScanSummary:
     new_lots: int = 0
     existing_lots: int = 0
     new_lot_items: list[Lot] = field(default_factory=list)
+    price_changes: list[PriceChange] = field(default_factory=list)
 
 
 class Monitor:
@@ -191,6 +210,9 @@ class Monitor:
         self.notifier.set_system_status(
             "Cookies",
             bool(self.parser.session.cookies),
+        )
+        self.notifier.set_favorites(
+            self._read_nonempty_lines(Path("settings/favorites.txt")),
         )
 
         try:
@@ -238,6 +260,10 @@ class Monitor:
             lot.profile_name = profile.name
         self.notifier.set_system_status("Internet", bool(html))
         self.notifier.set_system_status("Parser", bool(lots) or not html)
+        if html:
+            self.notifier.set_last_success(
+                datetime.now().strftime("%H:%M:%S"),
+            )
         self.notifier.update_ending_lots(profile.name, lots)
         summary = ProfileScanSummary(
             profile_id=profile.id,
@@ -246,8 +272,12 @@ class Monitor:
         )
         seen_at = self._now()
 
-        new_lots, database_lots_count = self.database.sync_lots(lots, seen_at)
+        new_lots, price_changes, database_lots_count = self.database.sync_lots(
+            lots,
+            seen_at,
+        )
         summary.new_lot_items.extend(new_lots)
+        summary.price_changes.extend(price_changes)
         summary.new_lots = len(new_lots)
         summary.existing_lots = max(summary.fetched - summary.new_lots, 0)
         self.notifier.update_database_lots_count(database_lots_count)
@@ -255,12 +285,31 @@ class Monitor:
         for lot in new_lots:
             self.logger.info("New lot: %s | %s", lot.title, lot.url)
 
-        self.logger.info(
-            "Scan complete: profile=%s fetched=%s new=%s existing=%s",
+        for change in price_changes:
+            self.logger.info(
+                "Price changed: %s | %s -> %s | %s",
+                change.lot.title,
+                change.previous_price,
+                change.current_price,
+                change.lot.url,
+            )
+            self.notifier.print_price_change(change)
+
+        log_scan = (
+            self.logger.info
+            if summary.new_lots or summary.price_changes
+            else self.logger.debug
+        )
+        log_scan(
+            (
+                "Scan complete: profile=%s fetched=%s new=%s "
+                "existing=%s price_changes=%s"
+            ),
             profile.name,
             summary.fetched,
             summary.new_lots,
             summary.existing_lots,
+            len(summary.price_changes),
         )
 
         self.notifier.print_summary(
@@ -355,6 +404,21 @@ class Monitor:
             elif self._is_lot_panel():
                 self.notifier.open_selected_lot()
             return "wait"
+        if normalized in {"h", "н"}:
+            self.notifier.show_panel("hot_lots")
+            return "wait"
+        if normalized == "e":
+            self.notifier.show_panel("ending_lots")
+            return "wait"
+        if normalized == "f":
+            self.notifier.show_panel("favorites")
+            return "wait"
+        if normalized == "p":
+            self.notifier.toggle_profiles_panel()
+            return "wait"
+        if normalized == "g":
+            self.notifier.show_panel("events")
+            return "wait"
         if normalized == "a":
             self._add_profile_from_dashboard()
             return "wait"
@@ -363,30 +427,37 @@ class Monitor:
                 self._blacklist_selected_seller()
             return "wait"
         if normalized == "c":
-            if self.notifier.current_panel() == "events":
-                self.notifier.clear_events()
-            elif self._is_lot_panel():
+            if self._is_lot_panel():
                 self._copy_selected_lot_url()
+            return "wait"
+        if normalized == "k":
+            self.notifier.clear_events()
             return "wait"
         if normalized == "d":
             if self.notifier.current_panel() == "profiles":
                 self._delete_selected_profile()
             return "wait"
-        if normalized == "e":
+        if normalized == "t":
             self._toggle_active_profile()
             return "wait"
-        if normalized == "f":
+        if normalized == "z":
             if self._is_lot_panel():
                 self._favorite_selected_lot()
+            return "wait"
+        if normalized == "o":
+            self.notifier.cycle_lot_sort()
+            return "wait"
+        if normalized == "v":
+            self.notifier.toggle_favorites_filter()
+            return "wait"
+        if normalized == "x":
+            self.notifier.toggle_compact_mode()
             return "wait"
         if normalized == "m":
             self._toggle_monitor_mode()
             return "wait"
         if normalized == "n":
             self._select_relative_profile(1)
-            return "wait"
-        if normalized == "p":
-            self._select_relative_profile(-1)
             return "wait"
         if normalized == "i":
             self._change_active_profile_interval()
@@ -415,7 +486,11 @@ class Monitor:
         return "wait"
 
     def _is_lot_panel(self) -> bool:
-        return self.notifier.current_panel() in {"hot_lots", "ending_lots"}
+        return self.notifier.current_panel() in {
+            "hot_lots",
+            "ending_lots",
+            "favorites",
+        }
 
     def _add_profile_from_dashboard(self) -> None:
         name, url, interval = self.notifier.prompt_new_profile(
@@ -724,8 +799,18 @@ class Monitor:
             self.notifier.add_event("У выбранного лота нет ссылки")
             return
 
-        self._append_unique_line(Path("settings/favorites.txt"), url)
-        self.notifier.add_event("Лот добавлен в избранное")
+        favorites_path = Path("settings/favorites.txt")
+        favorites = self._read_nonempty_lines(favorites_path)
+        if url in favorites:
+            favorites.remove(url)
+            message = "Лот удалён из избранного"
+        else:
+            favorites.add(url)
+            message = "Лот добавлен в избранное"
+
+        self._write_lines(favorites_path, favorites)
+        self.notifier.set_favorites(favorites)
+        self.notifier.add_event(message)
 
     def _save_monitor_settings(self) -> None:
         self.config.monitor_mode = self.monitor_mode
@@ -748,6 +833,22 @@ class Monitor:
 
         with path.open("a", encoding="utf-8") as file:
             file.write(f"{value}\n")
+
+    @staticmethod
+    def _read_nonempty_lines(path: Path) -> set[str]:
+        if not path.exists():
+            return set()
+        return {
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+
+    @staticmethod
+    def _write_lines(path: Path, values: set[str]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = "".join(f"{value}\n" for value in sorted(values))
+        path.write_text(content, encoding="utf-8")
 
     @staticmethod
     def _copy_to_clipboard(value: str) -> bool:
